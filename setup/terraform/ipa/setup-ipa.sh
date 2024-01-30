@@ -102,7 +102,7 @@ log_status "Setting host and domain names"
 export PRIVATE_IP=$(hostname -I | awk '{print $1}')
 export LOCAL_HOSTNAME=$(hostname -f)
 export PUBLIC_IP=$(curl -sL http://ifconfig.me || curl -sL http://api.ipify.org/ || curl -sL https://ipinfo.io/ip)
-export PUBLIC_DNS=ipa.${PUBLIC_IP}.nip.io
+  export PUBLIC_DNS=ipa.${PUBLIC_IP}.nip.io
 
 sed -i.bak "/${LOCAL_HOSTNAME}/d;/^${PRIVATE_IP}/d;/^::1/d" /etc/hosts
 echo "$PRIVATE_IP $PUBLIC_DNS $LOCAL_HOSTNAME" >> /etc/hosts
@@ -127,13 +127,18 @@ sed -i 's/metalink=/#metalink=/;s/#*baseurl=/baseurl=/' /etc/yum.repos.d/epel*.r
 yum_install cowsay figlet ipa-server rng-tools
 yum -y upgrade nss-tools
 systemctl restart dbus
-ipa-server-install --hostname=$(hostname -f) -r $REALM_NAME -n $(hostname -d) -a "$IPA_ADMIN_PASSWORD" -p "$DIRECTORY_MANAGER_PASSWORD" -U
+# add ipa hostname to ca subject
+ipa-server-install --hostname=$(hostname -f) --ca-subject "CN=$(hostname -f)" -r $REALM_NAME -n $(hostname -d) -a "$IPA_ADMIN_PASSWORD" -p "$DIRECTORY_MANAGER_PASSWORD" -U
 
 # authenticate as admin
 echo "${IPA_ADMIN_PASSWORD}" | kinit admin >/dev/null
 
 log_status "Creating groups"
 add_groups $USERS_GROUP $ADMINS_GROUP shadow supergroup hue
+
+# added for ECS (ipausers group is reserved, use cdp-users as default)
+log_status "Default group is ${USERS_GROUP}"
+ipa config-mod --defaultgroup="$USERS_GROUP"
 
 log_status "Creating Cloudera Manager principal user and adding it to admins group"
 add_user admin /home/admin admins $ADMINS_GROUP $USERS_GROUP "trust admins" shadow supergroup
@@ -148,14 +153,15 @@ log_status "Creating HUE proxy user"
 add_user hue /home/hue hue $USERS_GROUP
 
 log_status "Creating other users"
-add_user workshop /home/workshop $USERS_GROUP
+# Promote workshop user to admin for ECS LDAP admin access
+add_user workshop /home/workshop $ADMINS_GROUP
 add_user alice /home/alice $USERS_GROUP
 add_user bob /home/bob $USERS_GROUP
 
 log_status "Adding required roles"
 # Add this role to avoid racing conditions between multiple CMs coming up at the same time
 ipa role-add cmadminrole
-ipa role-add-privilege cmadminrole --privileges="Service Administrators"
+ipa role-add-privilege cmadminrole --privileges="Service Administrators" --privileges="Host Administrators"
 
 log_status "Starting the IPA service"
 systemctl restart krb5kdc

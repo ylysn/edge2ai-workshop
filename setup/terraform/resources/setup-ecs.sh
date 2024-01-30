@@ -24,7 +24,8 @@ if [[ $ACTION == "install-prereqs" ]]; then
   NAMESPACE=${5:-}
   IPA_HOST=${6:-}
   IPA_PRIVATE_IP=${7:-}
-  export IPA_HOST
+  HAS_ECS=1
+  export IPA_HOST HAS_ECS
 
   get_public_ip
   load_stack $NAMESPACE
@@ -114,6 +115,8 @@ elif [[ $ACTION == "install-cloudera-agent" ]]; then
 
   nohup bash $0 configure-coredns > ${BASE_DIR}/configure-coredns.log 2>&1 &
 
+  nohup bash $0 configure-cml > ${BASE_DIR}/configure-cml.log 2>&1 &
+
 elif [[ $ACTION == "configure-coredns" ]]; then
   export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
   export PATH=$PATH:/var/lib/rancher/rke2/bin
@@ -147,14 +150,76 @@ print(yaml.dump(cm, Dumper=yaml.Dumper))
 EOF
 
   set +e
-  while ! kubectl get configmap -n kube-system rke2-coredns-rke2-coredns; do
+  # It takes about 5 minutes to get the pod ready, use kubectl wait
+  while ! kubectl wait --for=condition=ready pod -n kube-system -l k8s-app=kube-dns --timeout=60s; do
     echo "$(date) - Waiting for rke2-coredns-rke2-coredns to be created"
     sleep 5
   done
   set -e
   sleep 10
+  # Enable python38
+  enable_py3
   kubectl get configmap -n kube-system rke2-coredns-rke2-coredns -o yaml | python $SCRIPT_FILE > $YAML_FILE
   kubectl apply -f $YAML_FILE
+
+elif [[ $ACTION == "configure-cml" ]]; then
+  export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+  export PATH=$PATH:/var/lib/rancher/rke2/bin
+
+  set +e
+  echo "$(date) - It takes about 5 minutes to get the pod ready, use kubectl wait on kube-dns"
+  while ! kubectl wait --for=condition=ready pod -n kube-system -l k8s-app=kube-dns --timeout=60s > /dev/null 2>&1; do
+    echo "$(date) - Waiting for rke2-coredns-rke2-coredns to be created"
+    sleep 60
+  done
+  set -e
+  echo "$(date) - Prepare namespace for edge2ai CML Workspace"
+  edge2ai_ns=$(kubectl get ns -o json | jq -r '.items[] | select(.metadata.name == "edge2ai").metadata.name')
+  if [[ $edge2ai_ns != "edge2ai" ]]; then
+    kubectl create namespace edge2ai
+    echo "$(date) - namespace for edge2ai CML Workspace created"
+  else
+    echo "$(date) - namespace for edge2ai CML Workspace exists"
+  fi
+
+  echo "$(date) - Upload cml-tls-secret"
+  cml_tls_secret=$(kubectl get secret -n edge2ai -o json | jq -r '.items[] | select(.metadata.name == "cml-tls-secret").metadata.name')
+  if [[ -z "$cml_tls_secret" ]]; then
+    kubectl create secret tls cml-tls-secret --cert=$HOST_PEM --key=$UNENCRYTED_KEY_PEM -o yaml --dry-run=client | kubectl -n edge2ai create -f -
+    echo "$(date) - cml-tls-secret for edge2ai CML Workspace created"
+  else
+    echo "$(date) - cml-tls-secret for edge2ai CML Workspace exits"
+  fi
+
+  echo "$(date) - Patch CML site_config"
+  ROOT_PEM=/opt/cloudera/security/ca/ca-cert.pem
+  root_ca_cert=$(<$ROOT_PEM)
+  set +e
+  while ! kubectl wait --for=condition=ready pod db-0 -n edge2ai --timeout=60s > /dev/null 2>&1; do
+    echo "$(date) - Waiting for CML backend db to be ready"
+    sleep 60
+  done
+  set -e
+  
+  while ! kubectl exec -it db-0 -c db -n edge2ai -- psql -P pager=off --expanded -U sense -c "select root_ca from site_config" > /dev/null 2>&1; do
+    echo "$(date) - Waiting for CML backend table to be ready"
+    sleep 60
+  done
+  kubectl exec -it db-0 -c db -n edge2ai -- psql -P pager=off --expanded -U sense -c "update site_config set root_ca='$root_ca_cert' where id=1"
+
+  tries=99
+  while [[ $tries -ne 0 ]]; do
+    echo "$(date) - Clean up deleted environment monitoring namespace"
+    [[ $(kubectl get ns -o json | jq -r '.items[] | select(.metadata.name | test("ecs-[A-Za-z0-9]+-monitoring-platform")).metadata.name') != "" ]] && break
+    ((tries--))
+    sleep 60
+  done
+  ecs_prometheus_ns=$(kubectl get ns -o json | jq -r '.items[] | select(.metadata.name | test("ecs-[A-Za-z0-9]+-monitoring-platform")).metadata.name')
+  nohup kubectl delete namespace $ecs_prometheus_ns >/dev/null 2>&1 &
+  # Make sure chrony is enabled
+  systemctl enable chronyd
+  
+  log_status "CML deployed successfully"
 fi
 
 if [[ ! -z ${CLUSTER_ID:-} ]]; then

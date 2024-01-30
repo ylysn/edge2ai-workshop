@@ -26,7 +26,7 @@ IPA_HOST=${6:-}
 IPA_PRIVATE_IP=${7:-}
 ECS_PUBLIC_DNS=${8:-}
 ECS_PRIVATE_IP=${9:-}
-export NAMESPACE DOCKER_DEVICE IPA_HOST
+export NAMESPACE DOCKER_DEVICE IPA_HOST ECS_PUBLIC_DNS
 
 if [[ ! -z ${CLUSTER_ID:-} ]]; then
   PEER_CLUSTER_ID=$(( (CLUSTER_ID/2)*2 + (CLUSTER_ID+1)%2 ))
@@ -438,7 +438,8 @@ fi
 
 log_status "Adding users"
 # After Kerberos installation so that principals are also created correctly, if needed
-add_user workshop /home/workshop cdp-users
+# Promote workshop user to admin for ECS access
+add_user workshop /home/workshop cdp-admins
 add_user admin /home/admin cdp-admins,shadow,supergroup
 add_user alice /home/alice cdp-users
 add_user bob /home/bob cdp-users
@@ -1010,8 +1011,13 @@ if [ "${HAS_CDSW:-}" == "1" ]; then
   nohup python -u /tmp/resources/cdsw_setup.py $(echo "$PUBLIC_DNS" | sed -E 's/cdp.(.*).nip.io/\1/') /tmp/resources/iot_model.pkl /tmp/resources/the_pwd.txt > /tmp/resources/cdsw_setup.log 2>&1 &
 fi
 
-if [[ ! -z ${ECS_PUBLIC_DNS:-} ]]; then
+if [[ "${HAS_ECS:-}" == "1" ]]; then
+  log_status "Starting ECS setup on ${ECS_PUBLIC_DNS}"
+  map_ipa_users
   install_ecs
+  install_cml $ECS_PUBLIC_DNS
+  systemctl enable chronyd
+  log_status "Finished ECS setup on ${ECS_PUBLIC_DNS}"
 fi
 
 log_status "Cleaning up"

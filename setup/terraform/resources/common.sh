@@ -360,6 +360,25 @@ function validate_stack() {
     fi
   fi
 
+  if [ "${HAS_ECS:-}" == "1" ]; then
+    if [[ $(is_kerberos_enabled) == "yes" ]] && [[ $(is_tls_enabled) == "yes" ]]; then
+      if [[ $USE_IPA == "no" ]]; then
+        echo "${C_RED}ERROR: ECS requires IPA to be enabled.${C_NORMAL}" > /dev/stderr 
+        errors=1
+      else
+        local stack_cm7_version=$(echo $CM_VERSION | sed 's/\.//g')
+        local stack_ecs_version=$(echo $ECS_VERSION | sed 's/\.//g')
+        if [[ $stack_ecs_version -ge 152 ]] && [[ $stack_cm7_version -lt 71132 ]]; then
+          echo "${C_RED}ERROR: ECS 1.5.2 requires Cloudera Manager version 7.11.3.2+.${C_NORMAL}" > /dev/stderr 
+          errors=1
+        fi
+      fi
+    else
+      echo "${C_RED}ERROR: ECS requires TLS and Kerberos to be enabled.${C_NORMAL}" > /dev/stderr 
+      errors=1
+    fi
+  fi
+
   if [ "$errors" != "0" ]; then
     echo "${C_RED}ERROR: Please fix the errors above in the configuration file $stack_file and try again.${C_NORMAL}" > /dev/stderr
     exit 1
@@ -727,7 +746,17 @@ function create_certs() {
   if [[ ! -z ${LOCAL_HOSTNAME:-} ]]; then
     ALT_NAMES="DNS:${LOCAL_HOSTNAME},"
   fi
-  export ALT_NAMES="${ALT_NAMES}DNS:$(hostname -f),DNS:*.${public_ip}.nip.io,DNS:*.cdsw.${public_ip}.nip.io"
+  
+  ALT_NAMES="${ALT_NAMES}DNS:$(hostname -f),DNS:*.${public_ip}.nip.io"
+
+  if [[ ${HAS_CDSW:-0} == 1 ]]; then
+    ALT_NAMES="${ALT_NAMES},DNS:*.cdsw.${public_ip}.nip.io"
+  fi
+  if [[ ${HAS_ECS:-0} == 1 ]] && [[ $PUBLIC_DNS == ecs* ]]; then
+    ALT_NAMES="${ALT_NAMES},DNS:*.apps.${PUBLIC_DNS},DNS:edge2ai.apps.${PUBLIC_DNS},DNS:*.edge2ai.apps.${PUBLIC_DNS}"
+  fi
+  export ALT_NAMES
+
   openssl req\
     -new\
     -key ${KEY_PEM} \
@@ -770,7 +799,14 @@ EOF
       ipa host-add-principal $(hostname -f) "host/${LOCAL_HOSTNAME}"
     fi
     ipa host-add-principal $(hostname -f) "host/*.${public_ip}.nip.io"
-    ipa host-add-principal $(hostname -f) "host/*.cdsw.${public_ip}.nip.io"
+    if [[ ${HAS_CDSW:-0} == 1 ]]; then
+      ipa host-add-principal $(hostname -f) "host/*.cdsw.${public_ip}.nip.io"
+    fi
+    if [[ ${HAS_ECS:-0} == 1 ]] && [[ $PUBLIC_DNS == ecs* ]]; then
+      ipa host-add-principal $(hostname -f) "host/*.apps.${PUBLIC_DNS}"
+      ipa host-add-principal $(hostname -f) "host/edge2ai.apps.${PUBLIC_DNS}"
+      ipa host-add-principal $(hostname -f) "host/*.edge2ai.apps.${PUBLIC_DNS}"
+    fi
     ipa cert-request ${CSR_PEM} --principal=host/$(hostname -f)
     echo -e "-----BEGIN CERTIFICATE-----\n$(ipa host-find $(hostname -f) | grep Certificate: | tail -1 | awk '{print $NF}')\n-----END CERTIFICATE-----" | openssl x509 > ${HOST_PEM}
 
@@ -1016,7 +1052,7 @@ function get_service_urls() {
   load_stack $NAMESPACE $BASE_DIR/resources validate_only exclude_signed
   CLUSTER_HOST=dummy PRIVATE_IP=dummy PUBLIC_DNS=dummy DOCKER_DEVICE=dummy CDSW_DOMAIN=dummy \
   IPA_HOST="$([[ $USE_IPA == "yes" ]] && echo dummy || echo "")" \
-  CLUSTER_ID=dummy PEER_CLUSTER_ID=dummy PEER_PUBLIC_DNS=dummy \
+  CLUSTER_ID=dummy PEER_CLUSTER_ID=dummy PEER_PUBLIC_DNS=dummy ECS_PUBLIC_DNS=dummy \
   python $BASE_DIR/resources/cm_template.py --cdh-major-version $CDH_MAJOR_VERSION $CM_SERVICES > $tmp_template_file
 
   local cm_port=$([[ $ENABLE_TLS == "yes" ]] && echo 7183 || echo 7180)
@@ -1576,6 +1612,27 @@ function paywall_curl() {
   retry_if_needed 5 5 "curl $auth --silent '${url}' > '${output}'"
 }
 
+function map_ipa_users() {
+  log_status "Configure LDAP/PAM Groups on CDP-BASE"
+  "${CURL[@]}" -X POST \
+    "https://${CLUSTER_HOST}:7183/api/v30/externalUserMappings" \
+    -d '{"items":[{"name":"cdp-admins","type":"LDAP","authRoles":[{"name":"ROLE_ADMIN"}]},{"name":"cdp-users","type":"LDAP","authRoles":[{"name":"ROLE_CLUSTER_ADMIN"}]}]}'
+
+  log_status "Patch gen_credentials_ipa.sh for IPA support to ECS"
+  # Preparing the script before provisioning ECS
+  local ipa_patch_file=/tmp/ipa_patch_file.$$
+  cat > $ipa_patch_file <<EOF
+  # ipa host-add patch for k8s
+  if [[ \$HOST =~ \. ]]; then
+    ipa host-add \$HOST  --force --no-reverse
+  else
+    ipa host-add \$HOST.svc.cluster.local  --force --no-reverse
+  fi
+EOF
+  local search_string='  ipa host-add $HOST --force --no-reverse'
+  sed -i.bak -e '/'"$search_string"'/r '"$ipa_patch_file"'' -e '/'"$search_string"'/d' /opt/cloudera/cm/bin/gen_credentials_ipa.sh
+}
+
 function install_ecs() {
   log_status "Copy CM repo file to ECS host"
   scp -o StrictHostKeyChecking=no -i /home/${SSH_USER}/.ssh/${NAMESPACE}.pem $CM_REPO_FILE ${SSH_USER}@${ECS_PRIVATE_IP}:/tmp/cm.repo
@@ -1625,8 +1682,15 @@ function install_ecs() {
   "${CURL[@]}" -X POST \
     "https://${CLUSTER_HOST}:7183/api/v51/clusters/${ECS_CLUSTER_NAME}/parcels/products/ECS/versions/${ECS_BUILD}/commands/activate"
   wait_for_parcel_state $ECS_CLUSTER_NAME ECS $ECS_BUILD DISTRIBUTED ACTIVATING ACTIVATED
+  
+  log_status "Prepare CM host for ECS certificates"
+  mkdir -p ${SEC_BASE}/ecs
+  ssh -tt -o StrictHostKeyChecking=no -i /home/${SSH_USER}/.ssh/${NAMESPACE}.pem ${SSH_USER}@${ECS_PRIVATE_IP} "sudo cp ${UNENCRYTED_KEY_PEM} ${HOST_PEM} /home/${SSH_USER}/.; sudo chown ${SSH_USER}:${SSH_USER} /home/${SSH_USER}/unencrypted-key.pem /home/${SSH_USER}/host.pem"
+  scp -o StrictHostKeyChecking=no -i /home/${SSH_USER}/.ssh/${NAMESPACE}.pem ${SSH_USER}@${ECS_PRIVATE_IP}:/home/${SSH_USER}/unencrypted-key.pem ${SEC_BASE}/ecs/unencrypted-key.pem 
+  scp -o StrictHostKeyChecking=no -i /home/${SSH_USER}/.ssh/${NAMESPACE}.pem ${SSH_USER}@${ECS_PRIVATE_IP}:/home/${SSH_USER}/host.pem ${SEC_BASE}/ecs/host.pem
+  chown -R cloudera-scm:cloudera-scm ${SEC_BASE}/ecs
 
-  log_status "Add ECS and Docker services to ECS cluster"
+  log_status "Add ECS and Docker services to ECS cluster (SSL)"
   local svc_json_file=${BASE_DIR}/ecs_svc.json
   cat > $svc_json_file <<EOF
 {
@@ -1705,6 +1769,22 @@ function install_ecs() {
             "name": "lsoDataPath",
             "value": "/ecs/local-storage",
             "sensitive": false
+          },
+          {
+            "name": "target_redundancy",
+            "value": 1
+          },
+          {
+            "name": "longhorn_replication",
+            "value": 1
+          },
+          {
+            "name": "ssl_certificate",
+            "value": "${SEC_BASE}/ecs/host.pem"
+          },
+          {
+            "name": "ssl_private_key",
+            "value": "${SEC_BASE}/ecs/unencrypted-key.pem"
           }
         ]
       },
@@ -1742,14 +1822,14 @@ EOF
   cat > $ecs_json_file <<EOF
 {
   "remoteRepoUrl": "${ECS_REPO}",
-  "valuesYaml": "ContainerInfo:\n  Mode: public\n  CopyDocker: false\nDatabase:\n  Mode: embedded\n  EmbeddedDbStorage: 200\nServices:\n  thunderheadenvironment:\n    Config:\n      database:\n        name: db-env\n  mlxcontrolplaneapp:\n    Config:\n      database:\n        name: db-mlx\n  dwx:\n    Config:\n      database:\n        name: db-dwx\n  cpxliftie:\n    Config:\n      database:\n        name: db-liftie\n  dex:\n    Config:\n      database:\n        name: db-dex\n  resourcepoolmanager:\n    Config:\n      database:\n        name: db-resourcepoolmanager\n  cdpcadence:\n    Config:\n      database:\n        name: db-cadence\n  cdpcadencevisibility:\n    Config:\n      database:\n        name: db-cadence-visibility\n  clusteraccessmanager:\n    Config:\n      database:\n        name: db-clusteraccessmanager\n  monitoringapp:\n    Config:\n      database:\n        name: db-alerts\n  thunderheadusermanagementprivate:\n    Config:\n      database:\n        name: db-ums\n  classicclusters:\n    Config:\n      database:\n        name: cm-registration\n  clusterproxy:\n    Config:\n      database:\n        name: cluster-proxy\nVault:\n  Mode: embedded\n",
+  "valuesYaml": "ContainerInfo:\n  Mode: public\n  CopyDocker: false\nDatabase:\n  Mode: embedded\n  EmbeddedDbStorage: 20\nServices:\n  thunderheadenvironment:\n    Config:\n      database:\n        name: db-env\n  mlxcontrolplaneapp:\n    Config:\n      database:\n        name: db-mlx\n  dwx:\n    Config:\n      database:\n        name: db-dwx\n  cpxliftie:\n    Config:\n      database:\n        name: db-liftie\n  dex:\n    Config:\n      database:\n        name: db-dex\n  resourcepoolmanager:\n    Config:\n      database:\n        name: db-resourcepoolmanager\n  cdpcadence:\n    Config:\n      database:\n        name: db-cadence\n  cdpcadencevisibility:\n    Config:\n      database:\n        name: db-cadence-visibility\n  clusteraccessmanager:\n    Config:\n      database:\n        name: db-clusteraccessmanager\n  monitoringapp:\n    Config:\n      database:\n        name: db-alerts\n  thunderheadusermanagementprivate:\n    Config:\n      database:\n        name: db-ums\n  classicclusters:\n    Config:\n      database:\n        name: cm-registration\n  clusterproxy:\n    Config:\n      database:\n        name: cluster-proxy\nVault:\n  Mode: embedded\n  EmbeddedStorage: 2\n",
   "containerizedClusterName": "${ECS_CLUSTER_NAME}",
   "experienceClusterName": "${ECS_CLUSTER_NAME}",
   "datalakeClusterName": "OneNodeCluster"
 }
 EOF
 
-  local ecs_call_log=/tmp/ecs-call.$(date +%s).log
+    local ecs_call_log=/tmp/ecs-call.$(date +%s).log
   "${CURL[@]}" -X POST \
     -H "Referer: https://${CLUSTER_HOST}:7183/cmf/express-wizard/wizard?allowResume=false&clusterType=EXPERIENCE_CLUSTER" \
     "https://${CLUSTER_HOST}:7183/api/v44/controlPlanes/commands/installEmbeddedControlPlane" \
@@ -1761,6 +1841,223 @@ EOF
     echo "Waiting for ECS setup to finish"
     sleep 1
   done
+}
+
+function install_cml() {
+  
+  local ENDPOINT_HOST="${1}"
+  local ENABLE_MLREG=${2:-1}
+  local KUBE_CONFIG="${3:-}"
+  local KUBE_DOMAIN="${4:-}"
+  local EXTERNAL_NFS=${5:-0}
+
+  log_status "Install CML on $ENDPOINT_HOST"
+
+  local ECS_BASE_URL="https://console-cdp.apps.$ENDPOINT_HOST"
+  local ROOT_CA=/opt/cloudera/security/x509/truststore.pem
+  local COOKIE_FILE=${BASE_DIR}/cookie.txt.$$
+  local LDAP_JSON=${BASE_DIR}/ldap.json.$$
+  local VALIDATE_JSON=${BASE_DIR}/validate.json.$$
+  local ECS_ENV_JSON=${BASE_DIR}/env.json.$$
+  local ECS_CML_JSON=${BASE_DIR}/cml.json.$$
+
+  log_status "Configure LDAP and groups on ECS-CP"
+  local CDP_ACCOUNT_ID=$(curl -v -k --retry 3 $ECS_BASE_URL/authenticate/login/local 2>&1 | grep "location:" | sed 's/.*accountId=//;s/&.*//')
+  # Get a session token
+  curl -k -X POST -c $COOKIE_FILE -d "username=admin&password=admin" "$ECS_BASE_URL/authenticate/callback/local?accountId=$CDP_ACCOUNT_ID&state=$ECS_BASE_URL" >/dev/null 2>&1
+  # Get LDAP
+  curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d '{"ldapProviderName": "cm-ldap"}' -o $LDAP_JSON $ECS_BASE_URL/api/v1/iam/describeLdapProvider >/dev/null 2>&1
+  # Add Groups
+  curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d '{"groupName": "cdp-admins", "syncMembershipOnUserLogin": true}' $ECS_BASE_URL/api/v1/iam/createGroup >/dev/null 2>&1
+  curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d '{"groupName": "cdp-users", "syncMembershipOnUserLogin": true}' $ECS_BASE_URL/api/v1/iam/createGroup >/dev/null 2>&1
+  # Assign Roles
+  curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d '{"role": "crn:altus:iam:us-west-1:altus:role:PowerUser", "groupName": "cdp-admins"}' $ECS_BASE_URL/api/v1/iam/assignGroupRole >/dev/null 2>&1
+
+  # Get JSON values
+  local LDAP_url=$(jq -r '.ldapProvider.ldapDetails.url' $LDAP_JSON)
+  local LDAP_userSearchBase=$(jq -r '.ldapProvider.ldapDetails.userSearchBase' $LDAP_JSON)
+  local LDAP_userSearchFilter=$(jq -r '.ldapProvider.ldapDetails.userSearchFilter' $LDAP_JSON)
+  local LDAP_groupSearchBase=$(jq -r '.ldapProvider.ldapDetails.groupSearchBase' $LDAP_JSON)
+  local LDAP_groupSearchFilter=$(jq -r '.ldapProvider.ldapDetails.groupSearchFilter' $LDAP_JSON)
+  local LDAP_emailMappingAttribute=$(jq -r '.ldapProvider.ldapDetails.emailMappingAttribute' $LDAP_JSON)
+  local LDAP_bindDn=$(jq -r '.ldapProvider.ldapDetails.bindDn' $LDAP_JSON)
+  local LDAP_tlsCaCertificates="$(cat $ROOT_CA | awk '{printf "%s\\n", $0}')"
+  # Build request JSON
+  cat > $VALIDATE_JSON <<EOF
+{
+  "ldapProviderName": "cm-ldap",
+  "skipGroupSyncOnLogin": false,
+  "url": "$LDAP_url",
+  "userSearchBase": "$LDAP_userSearchBase",
+  "userSearchFilter": "$LDAP_userSearchFilter",
+  "groupSearchBase": "$LDAP_groupSearchBase",
+  "groupSearchFilter": "$LDAP_groupSearchFilter",
+  "syncGroupsOnLogin": true,
+  "emailMappingAttribute": "$LDAP_emailMappingAttribute",
+  "showAdvanced": false,
+  "bindDn": "$LDAP_bindDn",
+  "bindPassword": "",
+  "tlsCaCertificates": [
+    "$LDAP_tlsCaCertificates"
+  ]
+}
+EOF
+
+  # Handle LDAP Certificate validation
+  local return_code=400
+  if jq -e . $VALIDATE_JSON  >/dev/null 2>&1 ; then
+    # Validate LDAP Config
+    return_code=$(curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d @$VALIDATE_JSON $ECS_BASE_URL/api/v1/consoleauthenticationcdp/validateLdapConfig 2>/dev/null | jq -r '.code')
+    if [ $return_code == "200" ]; then
+      curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d @$VALIDATE_JSON $ECS_BASE_URL/api/v1/iam/updateLdapProvider 2>/dev/null
+      echo "LDAP is configured with IPA Root CA SSL certificate"
+    else
+      echo "ERROR: Can't validate LDAP Config, abort"
+      return 1
+    fi
+  else
+    echo "ERROR: Invalid LDAP Config, abort"
+    return 1
+  fi
+
+  if [[ "${HAS_ECS:-}" == "1" ]]; then
+    log_status "Rebuild default environment on ECS-CP"
+    # Remove ecs environemnt created by express wizard
+    curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d '{"envNameOrCrn": "ecs"}' $ECS_BASE_URL/api/v1/compute/deregisterClusters >/dev/null 2>&1
+    curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d '{"environmentName": "ecs","cascading": true}' $ECS_BASE_URL/api/v1/environments2/deleteEnvironment >/dev/null 2>&1
+  fi
+  # Build request JSON
+  cat > $ECS_ENV_JSON <<EOF
+{
+    "environmentName": "default",
+    "address": "https://$CLUSTER_HOST:7183",
+    "user": "admin",
+    "authenticationToken": "$THE_PWD",
+    "clusterNames": [
+        "OneNodeCluster"
+    ],
+    "kubeConfig": "$KUBE_CONFIG",
+    "authenticationTokenType": "CLEARTEXT_PASSWORD",
+    "namespacePrefix": "cdp",
+    "domain": "$KUBE_DOMAIN",
+    "dockerConfigJson": "",
+    "description": ""
+}
+EOF
+  # Call createPrivateEnvironment
+  curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d @$ECS_ENV_JSON $ECS_BASE_URL/api/v1/environments2/createPrivateEnvironment >/dev/null 2>&1
+  while true; do
+    [[ $(curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d '{"environmentName": "default"}' $ECS_BASE_URL/api/v1/environments2/describeEnvironment 2>/dev/null| jq -r '.environment.status') == "AVAILABLE" ]] && break
+    echo "Waiting for environment to be ready.."
+    sleep 10
+  done
+  ECS_ENV_CRN=$(curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d '{"environmentName": "default"}' $ECS_BASE_URL/api/v1/environments2/describeEnvironment 2>/dev/null| jq -r '.environment.crn')
+
+  log_status "ECS: Enable NFS for CML"
+
+  NFS_EXT_DIR=""
+  NFS_VER=""
+  NFS_DISK_SIZE="100"
+
+  if [[ "${EXTERNAL_NFS}" == "1" ]]; then
+    log_status "Prepare NFS for CML"
+    enable_nfs
+    NFS_EXT_DIR="${ENDPOINT_HOST}:/nfs/workshop"
+    NFS_VER="4.1"
+    NFS_DISK_SIZE=""
+  fi
+
+  log_status "Provision CML Workspace"
+  # Build request JSON
+  cat > $ECS_CML_JSON <<EOF
+{
+    "environmentName": "default",
+    "workspaceName": "edge2ai",
+    "disableTLS": false,
+    "enableMonitoring": true,
+    "enableGovernance": true,
+    "enableModelMetrics": true,
+    "existingDatabaseConfig": {},
+    "mlGovernancePrincipal": "workshop",
+    "staticSubdomain": "edge2ai",
+    "existingNFS": "$NFS_EXT_DIR",
+    "nfsVersion": "$NFS_VER",
+    "namespace": "edge2ai",
+    "nfsDiskSize": "$NFS_DISK_SIZE",
+    "performCdswMigration": false
+}
+EOF
+  # Call createWorkspace 
+  curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d @$ECS_CML_JSON $ECS_BASE_URL/api/v1/ml/createWorkspace 2>/dev/null
+  local tries=99
+  while [[ $tries -ne 0 ]]; do
+    echo "Waiting for CML workspace to be ready.."
+    [[ $(curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d '{}' $ECS_BASE_URL/api/v1/ml/listWorkspaces 2>/dev/null | jq -r '.workspaces[] | .instanceStatus') == "installation:finished" ]] && break
+    ((tries--))
+    sleep 10
+  done
+
+  # Get CML URL
+  CML_BASE_URL=$(curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d '{}' $ECS_BASE_URL/api/v1/ml/listWorkspaces 2>/dev/null | jq -r '.workspaces[] | .instanceUrl')
+  log_status "CML Workspace URL ${CML_BASE_URL}"
+
+  if [[ $ENABLE_MLREG -eq 1 ]]; then
+    log_status "Setting up Model Registry"
+    # create_ozone_bucket
+    kinit -kt $KEYTABS_DIR/workshop.keytab workshop
+    ozone fs -mkdir -p ofs://ozone/edge2ai/modelregistry
+    ozone sh bucket link /edge2ai/modelregistry /s3v/modelregistry
+
+    # get_s3_access
+    get_s3_access=( $(ozone s3 getsecret --om-service-id=ozone) )
+    S3_ACCESS_KEY="${get_s3_access[0]#*=}"
+    S3_SECRET_KEY="${get_s3_access[1]#*=}"
+    OZONE_BUCKET_NAME="modelregistry"
+    
+    cat > $ECS_CML_JSON <<EOF
+{
+    "environmentName": "default",
+    "s3AccessKey": "$S3_ACCESS_KEY",
+    "s3SecretKey": "$S3_SECRET_KEY",
+    "s3Bucket": "$OZONE_BUCKET_NAME",
+    "s3Endpoint": "https://$CLUSTER_HOST:9879",
+    "environmentCrn": "$ECS_ENV_CRN"
+}
+EOF
+    # Call createModelRegistry 
+    curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d @$ECS_CML_JSON $ECS_BASE_URL/api/v1/ml/createModelRegistry 2>/dev/null
+    local tries=99
+    while [[ $tries -ne 0 ]]; do
+      echo "Waiting for Model Registry to be ready.."
+      [[ $(curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d '{}' $ECS_BASE_URL/api/v1/ml/listModelRegistries 2>/dev/null | jq -r '.modelRegistries[] | .status') == "INSTALLED" ]] && break
+      ((tries--))
+      sleep 10
+    done
+    # Get Workspace CRN
+    WORKSPACE_CRN=$(curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d '{}' $ECS_BASE_URL/api/v1/ml/listWorkspaces 2>/dev/null | jq -r '.workspaces[] | .crn')
+    # Refresh Edge2AI workspace
+    curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d '{"workspaceCrn": "'"$WORKSPACE_CRN"'"}' $ECS_BASE_URL/api/v1/ml/refreshModelRegistryConfigmap 2>/dev/null
+  fi
+  log_status "CML Workspace provisioned successfully"
+}
+
+function enable_nfs() {
+  yum_install nfs-utils
+  mkdir /nfs/workshop -p
+  chown 8536:8536 /nfs/workshop
+  chmod g+srwx /nfs/workshop
+  echo "/nfs/workshop  *(rw,sync,no_root_squash,no_all_squash,no_subtree_check)" | tee -a /etc/exports
+  systemctl enable nfs-server
+  systemctl start nfs-server
+  if firewall-cmd --state >/dev/null 2>&1; then
+    firewall-cmd --permanent --add-service=nfs
+    firewall-cmd --permanent --add-service=mountd
+    firewall-cmd --permanent --add-service=rpc-bind
+    firewall-cmd --reload
+    echo "firewall-cmd is running"
+  else
+    echo "SKIPPED: firewall-cmd is not running or not installed"
+  fi
 }
 
 function wait_for_parcel_state() {
@@ -1833,3 +2130,63 @@ function set_java_alternatives() {
       --slave $link_dir/xjc          xjc          $jdk_dir/xjc
   fi
 }
+
+#experimental
+function oc_login() {
+  local api_url="${1}"
+  wget https://mirror.openshift.com/pub/openshift-v4/clients/ocp/latest/openshift-client-linux.tar.gz -O /tmp/openshift-client-linux.tar.gz
+  tar xvf /tmp/openshift-client-linux.tar.gz -C /usr/local/bin
+  local retries=100
+  while [[ $retries -gt 0 ]]; do
+    set +e
+    /usr/local/bin/oc login -u kubeadmin -p $THE_PWD -s $api_url
+    err=$?
+    set -e
+    if [[ $err == 0 ]]; then
+      break
+    fi
+    retries=$((retries - 1))
+    sleep 10
+    echo "Waiting for OpenShift cluster on $api_url to be ready (retries left: $retries)"
+  done
+}
+
+function install_ocp() {
+  CURL=(curl -s -u "admin:${THE_PWD}" -H "accept: application/json" -H "Content-Type: application/json")
+  log_status "Connect to OCP API"
+  KUBE_DOMAIN="${OCP_PUBLIC_DNS}"
+  API_OCP_ENDPOINT="api.${OCP_PUBLIC_DNS}"
+  oc_login $API_OCP_ENDPOINT
+  KUBE_CONFIG="$(sed ':a;N;$!ba;s/\n/\\n/g' ~/.kube/config)"
+
+  log_status "Initialize OCP"
+  local ocp_json_file=${BASE_DIR}/ocp_install.json
+  cat > $ocp_json_file <<EOF
+{
+  "kubernetesType": "openshift",
+  "remoteRepoUrl": "${ECS_REPO}",
+  "valuesYaml": "ContainerInfo:\n  Mode: public\nDatabase:\n  Mode: embedded\n  EmbeddedDbStorage: 20\nServices:\n  thunderheadenvironment:\n    Config:\n      database:\n        name: db-env\n  mlxcontrolplaneapp:\n    Config:\n      database:\n        name: db-mlx\n  dwx:\n    Config:\n      database:\n        name: db-dwx\n  cpxliftie:\n    Config:\n      database:\n        name: db-liftie\n  dex:\n    Config:\n      database:\n        name: db-dex\n  resourcepoolmanager:\n    Config:\n      database:\n        name: db-resourcepoolmanager\n  cdpcadence:\n    Config:\n      database:\n        name: db-cadence\n  cdpcadencevisibility:\n    Config:\n      database:\n        name: db-cadence-visibility\n  clusteraccessmanager:\n    Config:\n      database:\n        name: db-clusteraccessmanager\n  monitoringapp:\n    Config:\n      database:\n        name: db-alerts\n  thunderheadusermanagementprivate:\n    Config:\n      database:\n        name: db-ums\n  classicclusters:\n    Config:\n      database:\n        name: cm-registration\n  clusterproxy:\n    Config:\n      database:\n        name: cluster-proxy\n  dssapp:\n    Config:\n      database:\n        name: db-dss-app\nOptionalCerts:\n  MiscCaCerts: ''\nVault:\n  Mode: embedded\n  EmbeddedStorage: 2\nStorage:\n  StorageClass: ''",
+  "kubeConfig": "${KUBE_CONFIG}",
+  "namespace": "cdp",
+  "isOverrideAllowed": true
+}
+EOF
+
+  log_status "Start Control Plane installation"
+  local ocp_call_log=/tmp/ocp-call.$(date +%s).log
+  "${CURL[@]}" -X POST \
+    -H "Referer: https://${CLUSTER_HOST}:7183/cmf/express-wizard/wizard?allowResume=false&clusterType=EXPERIENCE_CLUSTER" \
+    "https://${CLUSTER_HOST}:7183/api/v44/controlPlanes/commands/installControlPlane" \
+    -d @$ocp_json_file | tee $ocp_call_log
+  local job_id=$(jq '.id' $ocp_call_log)
+
+  while true; do
+    [[ $(curl -s -k -L -u admin:"${THE_PWD}" "$(get_cm_base_url)/api/v19/commands/$job_id" | jq -r '.active') == "false" ]] && break
+    echo "Waiting for OCP setup to finish"
+    # ECS setup takes up to 15 minutes, sleep for 30 seconds
+    sleep 30
+  done
+
+  log_status "OCP Cluster is ready"
+}
+#experimental
