@@ -243,8 +243,59 @@ resource "google_compute_instance_group" "servers" {
     [for id in (google_compute_instance.ecs.*.self_link): id],
     [for id in (google_compute_instance.web.*.self_link): id],
     [for id in (google_compute_instance.ipa.*.self_link): id],
+    [for id in (google_compute_instance.ocp.*.self_link): id],
   ])
 
   zone = "${var.gcp_region}-${var.gcp_az}"
 }
 
+# ocp block
+resource "google_compute_instance" "ocp" {
+  count                   = (var.deploy_ocp ? var.cluster_count : 0)
+  name                    = "${var.owner}-${var.name_prefix}-ocp-${count.index}"
+  machine_type            = var.ocp_instance_type
+  zone                    = "${var.gcp_region}-${var.gcp_az}"
+  metadata_startup_script = format(local.init_script,var.ocp_ssh_username,"ocp.${google_compute_address.ocp-public-ip[count.index].address}.nip.io",file(var.ssh_public_key), count.index)
+  hostname                = "ocp.${google_compute_address.ocp-public-ip[count.index].address}.nip.io"
+  
+  advanced_machine_features {
+    enable_nested_virtualization = true
+  }
+  
+  tags = [
+    "${var.owner}-${var.name_prefix}-private-access",
+    "${var.owner}-${var.name_prefix}-workshop-cross-access",
+    "${var.owner}-${var.name_prefix}-cluster-access",
+  ]
+
+  boot_disk {
+    initialize_params {
+      image = var.ocp_ami
+      size  = 500
+      type  = "pd-balanced"
+    }
+    auto_delete = true
+  }
+
+  metadata = {
+    ssh-keys = "${var.owner}:${file(var.ssh_public_key)}"
+  }
+
+  network_interface {
+    subnetwork = google_compute_subnetwork.subnet1.name
+
+    access_config {
+      nat_ip = google_compute_address.ocp-public-ip[count.index].address
+    }
+  }
+
+  timeouts {
+    create = "10m"
+  }
+}
+
+resource "google_compute_address" "ocp-public-ip" {
+  count        = (var.deploy_ocp ? var.cluster_count : 0)
+  name         = "${var.owner}-${var.name_prefix}-ocp-public-ip-${count.index}"
+  address_type = "EXTERNAL"
+}

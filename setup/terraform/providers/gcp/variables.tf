@@ -157,3 +157,22 @@ variable "cdp_license_file" {
   default     = ""
 }
 
+variable "deploy_ocp" {
+  description = "Whether to deploy the CRC instance or not"
+  type        = bool
+  default     = false
+}
+
+variable "ocp_instance_type" {
+  description = "Instance type for the OCP host"
+  default = "n2-highmem-16"
+}
+
+variable "ocp_ami" {
+  description = "GCP image for the OCP host"
+  default = "rocky-linux-8-optimized-gcp"
+}
+
+variable "ocp_ssh_username" {
+  default = "rocky"
+}

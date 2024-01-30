@@ -42,6 +42,7 @@ resource "google_compute_firewall" "workshop-cross-access" {
   source_ranges = flatten([
     [ for ip in (google_compute_address.cluster-public-ip.*.address): "${ip}/32" ],
     [ for ip in (google_compute_address.ecs-public-ip.*.address): "${ip}/32" ],
+    [ for ip in (google_compute_address.ocp-public-ip.*.address): "${ip}/32" ],
   ])
   target_tags = ["${var.owner}-${var.name_prefix}-workshop-cross-access"]
 }

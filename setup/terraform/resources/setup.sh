@@ -27,6 +27,10 @@ IPA_PRIVATE_IP=${7:-}
 ECS_PUBLIC_DNS=${8:-}
 ECS_PRIVATE_IP=${9:-}
 export NAMESPACE DOCKER_DEVICE IPA_HOST ECS_PUBLIC_DNS
+#experimental
+OCP_PUBLIC_DNS=${10:-}
+export OCP_PUBLIC_DNS
+#experimental
 
 if [[ ! -z ${CLUSTER_ID:-} ]]; then
   PEER_CLUSTER_ID=$(( (CLUSTER_ID/2)*2 + (CLUSTER_ID+1)%2 ))
@@ -52,6 +56,9 @@ load_stack $NAMESPACE
 # Save params
 if [[ ! -f $BASE_DIR/.setup.params ]]; then
   echo "bash -x $0 '$CLOUD_PROVIDER' '$SSH_USER' '$SSH_PWD' '$NAMESPACE' '$DOCKER_DEVICE' '$IPA_HOST' '$IPA_PRIVATE_IP' '$ECS_PUBLIC_DNS' '$ECS_PRIVATE_IP'" > $BASE_DIR/.setup.params
+#experimental
+  echo " '$OCP_PUBLIC_DNS'" >> $BASE_DIR/.setup.params
+#experimental
 fi
 
 
@@ -1019,6 +1026,14 @@ if [[ "${HAS_ECS:-}" == "1" ]]; then
   systemctl enable chronyd
   log_status "Finished ECS setup on ${ECS_PUBLIC_DNS}"
 fi
+#experimental
+if [[ ! -z ${OCP_PUBLIC_DNS:-} ]]; then
+  log_status "Starting OCP setup on ${OCP_PUBLIC_DNS}"
+  install_ocp
+  #install_cml $OCP_PUBLIC_DNS 0 1 $KUBE_CONFIG $OCP_PUBLIC_DNS
+  log_status "Finished OCP setup on ${OCP_PUBLIC_DNS}"
+fi
+#experimental
 
 log_status "Cleaning up"
 rm -f $BASE_DIR/stack.*.sh* $BASE_DIR/stack.sh* $BASE_DIR/.license
