@@ -127,3 +127,8 @@ variable "cdp_license_file" {
   type        = string
   default     = ""
 }
+
+variable "ecs_instance_type" {
+  description = "Instance type for the ECS host"
+  default = "Standard_E32_v3"
+}
