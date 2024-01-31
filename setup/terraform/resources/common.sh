@@ -1614,6 +1614,7 @@ function paywall_curl() {
 
 function map_ipa_users() {
   log_status "Configure LDAP/PAM Groups on CDP-BASE"
+  CURL=(curl -s -u "admin:${THE_PWD}" -H "accept: application/json" -H "Content-Type: application/json")
   "${CURL[@]}" -X POST \
     "https://${CLUSTER_HOST}:7183/api/v30/externalUserMappings" \
     -d '{"items":[{"name":"cdp-admins","type":"LDAP","authRoles":[{"name":"ROLE_ADMIN"}]},{"name":"cdp-users","type":"LDAP","authRoles":[{"name":"ROLE_CLUSTER_ADMIN"}]}]}'

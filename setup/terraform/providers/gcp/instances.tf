@@ -6,6 +6,7 @@ locals {
   # - set hostname
   # - add sudo user
   # - allow root access
+  # - add openssl
   SUDO_USER='%s'
   CLUSTER_HOSTNAME='%s'
   AUTH_KEYS='%s'
@@ -20,6 +21,7 @@ locals {
     chown -R $SUDO_USER:$SUDO_USER /home/$SUDO_USER/.ssh
     echo $AUTH_KEYS >> /home/$SUDO_USER/.ssh/authorized_keys
     sed -i.bak 's/PermitRootLogin *no/PermitRootLogin yes/' /etc/ssh/sshd_config
+    yum -y install openssl
     echo "export CLUSTER_ID=%s" >> $CONF_FILE
   fi
   EOF
