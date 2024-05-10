@@ -161,7 +161,7 @@
               "name": "server.port",
               "value": "18121"
             }
-{% if CSA_VERSION is ge('1.6') and if CSA_VERSION is lt('1.13') %}
+{% if CSA_VERSION is ge('1.6') and CSA_VERSION is lt('1.13') %}
             ,{
               "name": "default.admin.password",
               "value": "{{THE_PWD}}"
