@@ -144,7 +144,7 @@
           "name": "database_type",
           "value": "postgresql"
         }
-{% if CSA_VERSION is ge('1.7.0.0') and CSA_VERSION is lt('1.12.0.0') %}
+{% if CSA_VERSION is ge('1.7.0.0') and CSA_VERSION is lt('1.11.1.0') %}
         ,{
           "name": "loadbalancer.url",
           "value": "{{CLUSTER_HOST}}"
@@ -161,9 +161,15 @@
               "name": "server.port",
               "value": "18121"
             }
-{% if CSA_VERSION is ge('1.6') %}
+{% if CSA_VERSION is ge('1.6') and if CSA_VERSION is lt('1.13') %}
             ,{
               "name": "default.admin.password",
+              "value": "{{THE_PWD}}"
+            }
+{% endif %}
+{% if CSA_VERSION is ge('1.13') %}
+            ,{
+              "name": "ssb.default.admin.password",
               "value": "{{THE_PWD}}"
             }
 {% endif %}
