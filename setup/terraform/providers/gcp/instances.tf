@@ -6,6 +6,7 @@ locals {
   # - set hostname
   # - add sudo user
   # - allow root access
+  # - add openssl
   SUDO_USER='%s'
   CLUSTER_HOSTNAME='%s'
   AUTH_KEYS='%s'
@@ -13,6 +14,7 @@ locals {
   CONF_FILE="/etc/workshop.conf"
   if [[ ! -f $CONF_FILE ]]; then
     #initialization on first boot
+    yum -y install openssl11
     useradd -G 4,39,1000 $SUDO_USER
     mkdir /home/$SUDO_USER/.ssh
     touch /home/$SUDO_USER/.ssh/authorized_keys
