@@ -46,7 +46,7 @@ function ensure_control_master() {
   local pvt_key=$3
   local pid_file="${CONTROL_PATH_PREFIX}.${id}.parent_pid"
   set +e;
-  ssh -q -O check -S "${CONTROL_PATH_PREFIX}.${id}" centos@$ip > /dev/null 2>&1
+  ssh -q -O check -S "${CONTROL_PATH_PREFIX}.${id}" "$TF_VAR_ssh_username"@$ip > /dev/null 2>&1
   local ret=$?
   set -e
   if [[ $ret == 0 ]]; then
@@ -64,7 +64,7 @@ function ensure_control_master() {
   fi
 
   (
-    timeout 60 "ssh -q -o StrictHostKeyChecking=no -f -N -M -o ControlPersist=2h -S '${CONTROL_PATH_PREFIX}.${id}' -i '$pvt_key' centos@$ip" &
+    timeout 60 "ssh -q -o StrictHostKeyChecking=no -f -N -M -o ControlPersist=2h -S '${CONTROL_PATH_PREFIX}.${id}' -i '$pvt_key' "$TF_VAR_ssh_username"@$ip" &
     echo $! > "$pid_file"
     wait
     rm -f "$pid_file"
@@ -91,7 +91,7 @@ function check_instance() {
     return
   fi
 
-  ssh -q -S "${CONTROL_PATH_PREFIX}.${id}" centos@$ip "$cmd" > "${STATUS_FILE_PREFIX}.${id}.tmp"
+  ssh -q -S "${CONTROL_PATH_PREFIX}.${id}" "$TF_VAR_ssh_username"@$ip "$cmd" > "${STATUS_FILE_PREFIX}.${id}.tmp"
   if [[ $? == 0 ]]; then
     awk -v IP="$ip" -v ID="$id" -v KEY="$pvt_key" -v UNKNOWN="$STATUS_UNKNOWN" '{status=$1; if (status == "") {status=UNKNOWN}; gsub(/.*STATUS:/, "STATUS:"); print status" "ID" "IP" "KEY" "$0}' "${STATUS_FILE_PREFIX}.${id}.tmp"
   fi
@@ -262,9 +262,9 @@ function fetch_logs() {
     key=$1; shift
     local tmp_dir=/tmp/setup-${NAMESPACE}-${TIMESTAMP}-${id}-logs
     local tar_file=${tmp_dir}.tar.gz
-    cmd="sudo rm -rf $tmp_dir && sudo mkdir -p $tmp_dir && (sudo cp /var/log/cloudera-scm-server/cloudera-scm-server.log /tmp/resources/setup.log ~centos/ipa/setup-ipa.log ~centos/web/start-web.log $tmp_dir 2>/dev/null || true) && sudo tar -zcf $tar_file $tmp_dir 2>/dev/null && sudo chmod 444 $tar_file"
+    cmd="sudo rm -rf $tmp_dir && sudo mkdir -p $tmp_dir && (sudo cp /var/log/cloudera-scm-server/cloudera-scm-server.log /tmp/resources/setup.log '~$TF_VAR_ssh_username/ipa/setup-ipa.log' '~$TF_VAR_ssh_username/web/start-web.log' $tmp_dir 2>/dev/null || true) && sudo tar -zcf $tar_file $tmp_dir 2>/dev/null && sudo chmod 444 $tar_file"
     set +e
-    timeout 60 "ssh -q -o StrictHostKeyChecking=no -i '$key' centos@$ip '$cmd'"
+    timeout 60 "ssh -q -o StrictHostKeyChecking=no -i '$key' "$TF_VAR_ssh_username"@$ip '$cmd'"
     if [[ $? != 0 ]]; then
       echo "WARNING: Failed to fetch logs from instance ${id}."
     else
@@ -272,7 +272,7 @@ function fetch_logs() {
       local base_name=$(basename $tar_file)
       local target_file="${BASE_DIR}/logs/${base_name}"
       rm -f "$target_file"
-      timeout 60 "scp -i '$key' centos@$ip:$tar_file '$target_file'"
+      timeout 60 "scp -i '$key' "$TF_VAR_ssh_username"@$ip:$tar_file '$target_file'"
       if [[ $? == 0 ]]; then
         echo "${C_WHITE}Logs of instance [$id] downloaded to: logs/${base_name}${C_NORMAL}"
       else
