@@ -1332,11 +1332,19 @@ function deploy_os_prereqs() {
 
   log_status "Installing EPEL repo"
   yum erase -y epel-release || true; rm -f /etc/yum.repos.r/epel* || true
-  yum_install epel-release
-  # The EPEL repo has intermittent refresh issues that cause errors like the one below.
-  # Switch to baseurl to avoid those issues when using the metalink option.
-  # Error: https://.../repomd.xml: [Errno -1] repomd.xml does not match metalink for epel
-  sed -i 's/metalink=/#metalink=/;s/#*baseurl=/baseurl=/' /etc/yum.repos.d/epel*.repo
+  if [[ $(get_os_major_version) == "8" ]]; then
+    dnf config-manager --set-enabled powertools
+    dnf -y install epel-release epel-next-release
+  else
+    # In July 2024 Centos 7 reached EoL and the repo was moved to the CentOS Vault.
+    # The commands below update YUM repo file accordingly, if needed
+    patch_yum_repos_for_centos
+    yum_install epel-release
+    # The EPEL repo has intermittent refresh issues that cause errors like the one below.
+    # Switch to baseurl to avoid those issues when using the metalink option.
+    # Error: https://.../repomd.xml: [Errno -1] repomd.xml does not match metalink for epel
+    sed -i 's/metalink=/#metalink=/;s/#*baseurl=/baseurl=/' /etc/yum.repos.d/epel*.repo
+  fi
   yum clean all
   rm -rf /var/cache/yum/
   set +e
@@ -1361,6 +1369,7 @@ function deploy_cluster_prereqs() {
   log_status "Installing cluster dependencies"
   # Install RH python repo for CentOS
   yum_install centos-release-scl
+  patch_yum_repos_for_centos
   # Install dependencies
   yum_install nodejs gcc-c++ make shellinabox mosquitto transmission-cli rh-python38 rh-python38-python-devel httpd
   # Below is needed for secure clusters (required by Impyla)
@@ -1872,5 +1881,30 @@ function install_java() {
     tar -C "$java_home" --strip-components=1 -xvf "$tmp_tarball"
     rm -f $tmp_tarball
     set_java_alternatives "$java_home"
+  fi
+}
+
+function get_os_type() {
+  if grep "^NAME=.*Red Hat Enterprise Linux" /etc/os-release > /dev/null 2>&1; then
+    echo "RHEL"
+  elif grep -i "^NAME=.*centos" /etc/os-release > /dev/null 2>&1; then
+    echo "CENTOS"
+  else
+    echo "UNKNOWN"
+  fi
+}
+
+function get_os_major_version() {
+  grep "^VERSION=" /etc/os-release 2> /dev/null | sed 's/VERSION=["'\'']//g' | grep -o "^."
+}
+
+function patch_yum_repos_for_centos() {
+  # In July 2024 Centos 7 reached EoL and the repo was moved to the CentOS Vault.
+  # The mirrorlist.centos.org host was also decommissioned.
+  # The commands below update YUM repo file accordingly, if needed
+  if [[ $(get_os_type) == "CENTOS" ]]; then
+    sed -i s/mirror.centos.org/vault.centos.org/g /etc/yum.repos.d/*.repo
+    sed -i s/^#.*baseurl=http/baseurl=http/g /etc/yum.repos.d/*.repo
+    sed -i s/^mirrorlist=http/#mirrorlist=http/g /etc/yum.repos.d/*.repo
   fi
 }
