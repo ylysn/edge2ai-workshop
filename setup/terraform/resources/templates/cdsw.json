@@ -10,17 +10,21 @@
     }
   ],
   "products": [
-    {
-      "product": "{{ANACONDA_PRODUCT}}",
-      "version": "{{ANACONDA_VERSION}}"
-    },
+{% if CDSW_VERSION != '1.10.5' %}
+{
+  "product": "{{ANACONDA_PRODUCT}}",
+  "version": "{{ANACONDA_VERSION}}"
+},
+{% endif %}
     {
       "product": "CDSW",
       "version": "{{CDSW_BUILD}}"
     }
   ],
   "repositories": [
+{% if CDSW_VERSION != '1.10.5' %}
     "{{ANACONDA_PARCEL_REPO}}",
+{% endif %}
     "{{CDSW_PARCEL_REPO}}"
   ],
   "services": [

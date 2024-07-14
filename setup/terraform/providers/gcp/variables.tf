@@ -53,11 +53,6 @@ variable "ecs_instance_type" {
   description = "Instance type for the ECS host"
 }
 
-variable "ipa_instance_type" {
-  description = "Instance type for the IPA host"
-  default = "t3.medium"
-}
-
 variable "name_prefix" {
   description = "Name prefix for resources"
 }
@@ -96,26 +91,18 @@ variable "base_dir" {
   type        = string
 }
 
-variable "aws_region" {
-  description = "AWS Region"
+variable "gcp_region" {
+  description = "GCP Region"
 }
 
-variable "aws_az" {
-  description = "AWS AZ"
+variable "gcp_az" {
+  description = "GCP AZ"
   default     = "a"
 }
 
-variable "aws_profile" {
-  description = "Abort this with CTRL-C, set the TF_VAR_profile environment variable in your shell and try again."
+variable "gcp_project" {
+  description = "Abort this with CTRL-C, set the TF_VAR_gcp_project environment variable in your shell and try again."
   default = null
-}
-
-variable "aws_access_key_id" {
-  description = "Abort this with CTRL-C, set the TF_VAR_aws_access_key_id environment variable in your shell and try again."
-}
-
-variable "aws_secret_access_key" {
-  description = "Abort this with CTRL-C, set the TF_VAR_aws_secret_access_key environment variable in your shell and try again."
 }
 
 variable "key_name" {
@@ -127,19 +114,23 @@ variable "web_key_name" {
 }
 
 variable "base_ami" {
-  description = "AWS AMI for the Web Service"
+  description = "GCP image for the Web Service"
+  default = "centos-7-v20231212"
 }
 
 variable "cluster_ami" {
-  description = "AWS AMI for the CDH cluster"
+  description = "GCP image for the CDH cluster"
+  default = "centos-7-v20231212"
+
 }
 
 variable "ecs_ami" {
-  description = "AWS AMI for the ECS host"
+  description = "GCP image for the ECS host"
+  default = "centos-7-v20231212"
 }
 
 variable "vpc_id" {
-  description = "AWS VPC id"
+  description = "GCP VPC id"
   default     = ""
 }
 
@@ -165,3 +156,4 @@ variable "cdp_license_file" {
   type        = string
   default     = ""
 }
+
