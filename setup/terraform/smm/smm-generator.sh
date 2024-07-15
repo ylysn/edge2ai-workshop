@@ -3,6 +3,7 @@ set -u
 set -e
 
 BASE_DIR=$(cd $(dirname $0); pwd -P)
+source "${BASE_DIR}/common.sh"
 
 DATALOADER_DIR=/opt/dataloader
 LOG_DIR=$DATALOADER_DIR/logs
@@ -40,13 +41,13 @@ TOPIC_PARTITIONS=5
 
 function install_packages() {
   # Install needed packages
-  curl -k -L "https://github.com/stedolan/jq/releases/download/jq-1.6/jq-linux64" > /usr/bin/jq
+  curl -kL "https://github.com/stedolan/jq/releases/download/jq-1.6/jq-linux64" > /usr/bin/jq
   chmod 555 /usr/bin/jq
 }
 
 function fetch_cm_config_and_set_vars() {
-  API_VERSION=$(curl -k -L -u $CM_USER:$CM_PWD "http://$CM_HOST:7180/api/version" 2>/dev/null)
-  curl -k -L -u $CM_USER:$CM_PWD "http://$CM_HOST:7180/api/$API_VERSION/cm/deployment" > $DEP_FILE 2>/dev/null
+  API_VERSION=$(curl -k --location-trusted -u $CM_USER:$CM_PWD "http://$CM_HOST:7180/api/version" 2>/dev/null)
+  curl -k --location-trusted -u $CM_USER:$CM_PWD "http://$CM_HOST:7180/api/$API_VERSION/cm/deployment" > $DEP_FILE 2>/dev/null
   echo -n "$(jq -r '.clusters[].services[].roles[] | select(.type == "SERVER").hostRef.hostname' $DEP_FILE):2181" > $BASE_DIR/.zk_addr
   echo -n "$(jq -r '.clusters[].services[].roles[] | select(.type == "SCHEMA_REGISTRY_SERVER").hostRef.hostname' $DEP_FILE):7788" > $BASE_DIR/.sr_addr
 }
@@ -428,9 +429,7 @@ logger.info("Done!")
 # Done
 EOF
 
-  set +u
-  source /opt/rh/rh-python38/enable
-  set -u
+  enable_py3
   pip install requests nipyapi
   python $import_script $flow_xml
 }

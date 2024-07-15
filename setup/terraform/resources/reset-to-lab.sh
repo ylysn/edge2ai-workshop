@@ -1,10 +1,11 @@
 #!/bin/bash
 BASE_DIR=$(cd "$(dirname $0)"; pwd -L)
+source "${BASE_DIR}/common.sh"
 
 function suppress_deprecation_warning() {
   egrep -v "from cryptography.hazmat.backends|CryptographyDeprecationWarning"
 }
-source /opt/rh/rh-python38/enable
+enable_py3
 
 set -u
 set -e

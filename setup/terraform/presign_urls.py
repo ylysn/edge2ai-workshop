@@ -7,6 +7,8 @@ from subprocess import Popen, PIPE
 from tempfile import mkstemp
 from botocore.exceptions import ClientError
 
+MAJOR_OS_VERSIONS = ['7', '8']
+
 
 def create_presigned_url(s3_client, bucket_name, object_name, expiration=7200):
     response = s3_client.generate_presigned_url("get_object",
@@ -36,7 +38,8 @@ def remove_file(file_path):
         pass
 
 
-def compute_env(file_path):
+def compute_env(file_path, major_os_version=MAJOR_OS_VERSIONS[0]):
+    os.environ['MAJOR_OS_VERSION'] = major_os_version
     command = "bash -c 'source %s && set'" % (file_path,)
     proc = Popen(command, shell=True, stdout=PIPE)
     stdout, _ = proc.communicate()
@@ -51,54 +54,55 @@ def compute_env(file_path):
 
 
 def convert_stack_file(s3_client, file_path, output_dir=None):
-    env = compute_env(file_path)
-    output_stack_path = file_path + ".signed"
-    output_urls_path = file_path + ".urls"
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
-        output_stack_path = os.path.join(output_dir, os.path.basename(output_stack_path))
-        output_urls_path = os.path.join(output_dir, os.path.basename(output_urls_path))
+    for major_os_version in MAJOR_OS_VERSIONS:
+        env = compute_env(file_path, major_os_version)
+        output_stack_path = file_path + ".signed.el" + major_os_version
+        output_urls_path = file_path + ".urls.el" + major_os_version
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+            output_stack_path = os.path.join(output_dir, os.path.basename(output_stack_path))
+            output_urls_path = os.path.join(output_dir, os.path.basename(output_urls_path))
 
-    remove_file(output_stack_path)
-    output_stack_file = open(output_stack_path, "w")
-    url_map = {}
-    converted = False
-    for line in open(file_path):
-        line = line.rstrip()
-        m = re.match(r"(^[^=]*)=", line)
-        if m:
-            var_name, = m.groups()
-            if var_name in env:
-                converted = True
-                bucket = env[var_name]["bucket"]
-                key = env[var_name]["key"]
-                main_presigned_url = create_presigned_url(s3_client, bucket, key)
-                line = "%s=\"%s\"" % (var_name, main_presigned_url)
-
-                # Check for manifest.json
-                manifest_key = key.rstrip("/") + "/manifest.json"
-                manifest = get_file(s3_client, bucket, manifest_key)
-                if manifest:
-                    manifest_presigned_url = create_presigned_url(s3_client, bucket, manifest_key)
-                    url_map[main_presigned_url + "/manifest.json"] = manifest_presigned_url
-                    j = json.loads(manifest)
-                    for parcel in j["parcels"]:
-                        parcel_key = key.rstrip("/") + "/" + parcel["parcelName"]
-                        parcel_url = main_presigned_url + "/" + parcel["parcelName"]
-                        parcel_presigned_url = create_presigned_url(s3_client, bucket, parcel_key)
-                        url_map[parcel_url] = parcel_presigned_url
-
-        output_stack_file.write(line + "\n")
-    output_stack_file.close()
-
-    remove_file(output_urls_path)
-    if not converted:
         remove_file(output_stack_path)
-    elif url_map:
-        output_map = open(output_urls_path, "w")
-        for key in url_map:
-            output_map.write("%s-->%s\n" % (key, url_map[key]))
-        output_map.close()
+        output_stack_file = open(output_stack_path, "w")
+        url_map = {}
+        converted = False
+        for line in open(file_path):
+            line = line.rstrip()
+            m = re.match(r"(^[^=]*)=", line)
+            if m:
+                var_name, = m.groups()
+                if var_name in env:
+                    converted = True
+                    bucket = env[var_name]["bucket"]
+                    key = env[var_name]["key"]
+                    main_presigned_url = create_presigned_url(s3_client, bucket, key)
+                    line = "%s=\"%s\"" % (var_name, main_presigned_url)
+
+                    # Check for manifest.json
+                    manifest_key = key.rstrip("/") + "/manifest.json"
+                    manifest = get_file(s3_client, bucket, manifest_key)
+                    if manifest:
+                        manifest_presigned_url = create_presigned_url(s3_client, bucket, manifest_key)
+                        url_map[main_presigned_url + "/manifest.json"] = manifest_presigned_url
+                        j = json.loads(manifest)
+                        for parcel in j["parcels"]:
+                            parcel_key = key.rstrip("/") + "/" + parcel["parcelName"]
+                            parcel_url = main_presigned_url + "/" + parcel["parcelName"]
+                            parcel_presigned_url = create_presigned_url(s3_client, bucket, parcel_key)
+                            url_map[parcel_url] = parcel_presigned_url
+
+            output_stack_file.write(line + "\n")
+        output_stack_file.close()
+
+        remove_file(output_urls_path)
+        if not converted:
+            remove_file(output_stack_path)
+        elif url_map:
+            output_map = open(output_urls_path, "w")
+            for key in url_map:
+                output_map.write("%s-->%s\n" % (key, url_map[key]))
+            output_map.close()
 
 
 if __name__ == '__main__':

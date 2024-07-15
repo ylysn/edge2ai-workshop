@@ -49,6 +49,53 @@ function yum_install() {
   done
 }
 
+function install_epel() {
+  yum erase -y epel-release || true; rm -f /etc/yum.repos.r/epel* || true
+  if [[ $(get_os_major_version) == "8" ]]; then
+    if [[ $(get_os_type) == "CENTOS" ]]; then
+      patch_yum_repos_for_centos
+      dnf config-manager --set-enabled powertools
+      dnf -y install epel-release epel-next-release
+    else
+      dnf -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-8.noarch.rpm
+    fi
+  else
+    patch_yum_repos_for_centos
+    yum_install epel-release
+  fi
+  yum clean all
+  rm -rf /var/cache/yum/
+  # Load and accept GPG keys
+  yum makecache -y || true
+  yum repolist
+}
+
+function patch_yum_repos_for_centos() {
+  # In July 2024 Centos 7 reached EoL and the repo was moved to the CentOS Vault.
+  # The mirrorlist.centos.org host was also decommissioned.
+  # The commands below update YUM repo file accordingly, if needed
+  if [[ $(get_os_type) == "CENTOS" ]]; then
+    sed -i 's/mirror.centos.org/vault.centos.org/g' /etc/yum.repos.d/*.repo
+    sed -i 's/^#.*baseurl=http/baseurl=http/g' /etc/yum.repos.d/*.repo
+    sed -i 's/^mirrorlist=http/#mirrorlist=http/g' /etc/yum.repos.d/*.repo
+    sed -i 's/metalink=/#metalink=/' /etc/yum.repos.d/*.repo
+  fi
+}
+
+function get_os_major_version() {
+  grep "^VERSION=" /etc/os-release 2> /dev/null | sed 's/VERSION=["'\'']//g' | grep -o "^."
+}
+
+function get_os_type() {
+  if grep "^NAME=.*Red Hat Enterprise Linux" /etc/os-release > /dev/null 2>&1; then
+    echo "RHEL"
+  elif grep -i "^NAME=.*centos" /etc/os-release > /dev/null 2>&1; then
+    echo "CENTOS"
+  else
+    echo "UNKNOWN"
+  fi
+}
+
 function get_group_id() {
   local group=$1
   ipa group-find --group-name="$group" | grep GID | awk '{print $2}'
@@ -119,14 +166,14 @@ echo "HOSTNAME=${PUBLIC_DNS}" >> /etc/sysconfig/network
 
 log_status "Installing IPA server"
 yum erase -y epel-release || true; rm -f /etc/yum.repos.r/epel* || true
-yum_install epel-release
-# The EPEL repo has intermittent refresh issues that cause errors like the one below.
-# Switch to baseurl to avoid those issues when using the metalink option.
-# Error: https://.../repomd.xml: [Errno -1] repomd.xml does not match metalink for epel
-sed -i 's/metalink=/#metalink=/;s/#*baseurl=/baseurl=/' /etc/yum.repos.d/epel*.repo
+install_epel
+
+log_status "Installing needed tools"
 yum_install cowsay figlet ipa-server rng-tools
 yum -y upgrade nss-tools
 systemctl restart dbus
+
+log_status "Installing IPA server"
 ipa-server-install --hostname=$(hostname -f) -r $REALM_NAME -n $(hostname -d) -a "$IPA_ADMIN_PASSWORD" -p "$DIRECTORY_MANAGER_PASSWORD" -U
 
 # authenticate as admin
@@ -173,6 +220,6 @@ log_status "Making keytabs and CA cert available through the web server"
 ln -s /keytabs /var/www/html/keytabs
 ln -s /etc/ipa/ca.crt /var/www/html/ca.crt
 
-figlet -f small -w 300  "IPA server deployed successfully"'!' | cowsay -n -f "$(ls -1 /usr/share/cowsay | grep "\.cow" | sed 's/\.cow//' | egrep -v "bong|head-in|sodomized|telebears" | shuf -n 1)"
+figlet -f small -w 300  "IPA server deployed successfully"'!' | cowsay -n -f "$(find /usr/share/cowsay -type f -name "*.cow" | grep "\.cow" | sed 's#.*/##;s/\.cow//' | egrep -v "bong|head-in|sodomized|telebears" | shuf -n 1)"
 echo "Completed successfully: IPA"
 log_status "IPA server installed successfully."

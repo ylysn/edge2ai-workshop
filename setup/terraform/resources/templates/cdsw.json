@@ -10,17 +10,21 @@
     }
   ],
   "products": [
+{% if MAJOR_OS_VERSION == '7' %}
     {
       "product": "{{ANACONDA_PRODUCT}}",
       "version": "{{ANACONDA_VERSION}}"
     },
+{% endif %}
     {
       "product": "CDSW",
       "version": "{{CDSW_BUILD}}"
     }
   ],
   "repositories": [
+{% if MAJOR_OS_VERSION == '7' %}
     "{{ANACONDA_PARCEL_REPO}}",
+{% endif %}
     "{{CDSW_PARCEL_REPO}}"
   ],
   "services": [

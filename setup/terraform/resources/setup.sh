@@ -136,9 +136,7 @@ EOF
   install_java
 
   log_status "Installing Postgresql repo"
-  if [[ $(rpm -qa | grep pgdg-redhat-repo- | wc -l) -eq 0 ]]; then
-    yum_install https://download.postgresql.org/pub/repos/yum/reporpms/EL-7-x86_64/pgdg-redhat-repo-latest.noarch.rpm
-  fi
+  install_pg_repo
 
   log_status "Installing Cloudera Manager"
   # NOTE: must disable PG repos for this install due to some weird dependencies on psycopg2,
@@ -156,9 +154,6 @@ EOF
   systemctl disable postgresql-${PG_VERSION}
 
   enable_py3
-  pip install --quiet --upgrade pip
-  # re-source after pip upgrade due to change in path of the pip executable
-  enable_py3
   pip install --progress-bar off \
     cm-client==44.0.3 \
     impyla==0.17.0 \
@@ -173,11 +168,6 @@ EOF
     requests-gssapi==1.2.3 \
     requests-kerberos==0.14.0 \
     thrift-sasl==0.4.3
-
-  rm -f /usr/bin/python3 /usr/bin/pip3 /usr/local/bin/python3.8
-  ln -s /opt/rh/rh-python38/root/bin/python3 /usr/bin/python3
-  ln -s /opt/rh/rh-python38/root/bin/pip3 /usr/bin/pip3
-  ln -s /opt/rh/rh-python38/root/usr/bin/python3.8 /usr/local/bin/python3.8
 
   log_status "Installing JDBC connector"
   cp /usr/share/java/postgresql-jdbc.jar /usr/share/java/postgresql-connector-java.jar
@@ -217,6 +207,10 @@ EOF
       ln -s /opt/cloudera/cem/${EFM_BASE_NAME} /opt/cloudera/cem/efm
       ln -s /opt/cloudera/cem/efm/bin/efm.sh /etc/init.d/efm
       sed -i '1s/.*/&\n# chkconfig: 2345 20 80\n# description: EFM is a Command \& Control service for managing MiNiFi deployments/' /opt/cloudera/cem/efm/bin/efm.sh
+      # CEM version 2.x and later require Java 17. If Java 17 is installed, modify the EFM startup script to reference that Java home
+      if [[ $CEM_VERSION == "2"* && -f $JDK_BASE/jdk-17/bin/java ]]; then
+        sed -i "3s#.*#&\nexport JAVA_HOME=$JDK_BASE/jdk-17#" /opt/cloudera/cem/efm/bin/efm.sh
+      fi
       chkconfig --add efm
       chown -R root:root /opt/cloudera/cem/${EFM_BASE_NAME}
       sed -i.bak 's#APP_EXT_LIB_DIR=.*#APP_EXT_LIB_DIR=/usr/share/java#' /opt/cloudera/cem/efm/conf/efm.conf
@@ -275,7 +269,7 @@ EOF
 
         # Ensure MiNiFi uses Python 3.8 instead of the default system version (3.6)
         if [[ -f /etc/rc.d/init.d/minifi ]]; then
-          sed -i 's#export MINIFI_HOME#source /opt/rh/rh-python38/enable\nexport MINIFI_HOME#' /etc/rc.d/init.d/minifi
+          sed -i 's#export MINIFI_HOME#[[ -f /opt/rh/rh-python38/enable ]] \&\& source /opt/rh/rh-python38/enable\nexport MINIFI_HOME#' /etc/rc.d/init.d/minifi
         else
           # TODO: In recent MiNiFi versions the minifi.sh install script no longer creates /etc/rc.d/init.d/minifi
           # TODO: Instead, it creates /usr/local/lib/systemd/system/minifi.service. We need another way to inject
@@ -287,7 +281,7 @@ EOF
         patchelf /opt/cloudera/cem/minifi/extensions/libminifi-python-script-extension.so --replace-needed libpython3.so libpython3.8.so
 
         # Install needed modules
-        source /opt/rh/rh-python38/enable
+        enable_py3
         pip install numpy pandas scikit-learn==1.1.1 xgboost==1.6.2
       fi
     fi
@@ -466,9 +460,16 @@ systemctl restart shellinaboxd
 
 if [ "${HAS_CDSW:-}" == "1" ]; then
     echo "CDSW_BUILD is set to '${CDSW_BUILD}'"
-    if ! grep "CentOS Linux release 7.9" /etc/redhat-release > /dev/null 2>&1 ; then
-      # CDSW requires Centos 7.5, so we trick it to believe it is...
-      echo "CentOS Linux release 7.9.2009 (Core)" > /etc/redhat-release
+    if [[ $(get_os_major_version) == "7" ]]; then
+      if ! grep "CentOS Linux release 7.9" /etc/redhat-release > /dev/null 2>&1 ; then
+        # CDSW requires Centos 7.5, so we trick it to believe it is...
+        echo "CentOS Linux release 7.9.2009 (Core)" > /etc/redhat-release
+      fi
+    else
+      # Ensure this OS looks like a compatible CentOS
+      if grep -i centos /etc/redhat-release > /dev/null; then
+        echo "CentOS Linux release 8.6" > /etc/redhat-release
+      fi
     fi
     if [[ "${DOCKER_DEVICE}" == "" ]]; then
       echo "ERROR: Could not find any candidate devices."
@@ -711,9 +712,9 @@ kill -9 $NETSTAT_PID || true
 trap 'echo Setup return code: $?' 0
 
 if [[ ${HAS_RANGER:-0} == 1 && ${HAS_NIFI:-0} == 1 ]]; then
-  JOB_ID=$(curl -s -k -L -X POST -u admin:"${THE_PWD}" "$(get_cm_base_url)/api/v19/clusters/OneNodeCluster/services/ranger/commands/restart" | jq '.id')
+  JOB_ID=$(curl -s -k --location-trusted -X POST -u admin:"${THE_PWD}" "$(get_cm_base_url)/api/v19/clusters/OneNodeCluster/services/ranger/commands/restart" | jq '.id')
   while true; do
-    [[ $(curl -s -k -L -u admin:"${THE_PWD}" "$(get_cm_base_url)/api/v19/commands/$JOB_ID" | jq -r '.active') == "false" ]] && break
+    [[ $(curl -s -k --location-trusted -u admin:"${THE_PWD}" "$(get_cm_base_url)/api/v19/commands/$JOB_ID" | jq -r '.active') == "false" ]] && break
     echo "Waiting for Ranger to restart"
     sleep 1
   done
@@ -887,7 +888,7 @@ if [[ ${HAS_ATLAS:-0} == 1 ]]; then
   while [[ $RETRIES -gt 0 ]]; do
     log_status "Wait for Atlas to be ready ($RETRIES retries left)"
     set +e
-    ret_code=$(curl -w '%{http_code}' -s -o /dev/null -k --location -u admin:${THE_PWD} "${ATLAS_PROTO}://${CLUSTER_HOST}:${ATLAS_PORT}/api/atlas/v2/types/typedefs")
+    ret_code=$(curl -w '%{http_code}' -s -o /dev/null -k --location-trusted -u admin:${THE_PWD} "${ATLAS_PROTO}://${CLUSTER_HOST}:${ATLAS_PORT}/api/atlas/v2/types/typedefs")
     set -e
     if [[ $ret_code == "200" ]]; then
       ATLAS_OK=1
@@ -900,7 +901,7 @@ if [[ ${HAS_ATLAS:-0} == 1 ]]; then
   if [[ $ATLAS_OK -eq 1 ]]; then
     log_status "Loading Flink entities in Atlas"
     curl \
-      -k --location \
+      -k --location-trusted \
       -u admin:${THE_PWD} \
       --request POST "${ATLAS_PROTO}://${CLUSTER_HOST}:${ATLAS_PORT}/api/atlas/v2/types/typedefs" \
       --header 'Content-Type: application/json' \
@@ -1023,7 +1024,7 @@ rm -f $BASE_DIR/stack.*.sh* $BASE_DIR/stack.sh* $BASE_DIR/.license
 
 if [[ ! -z ${CLUSTER_ID:-} ]]; then
   echo "At this point you can login into Cloudera Manager host on port 7180 and follow the deployment of the cluster"
-  figlet -f small -w 300  "Cluster  ${CLUSTER_ID:-???}  deployed successfully"'!' | cowsay -n -f "$(ls -1 /usr/share/cowsay | grep "\.cow" | sed 's/\.cow//' | egrep -v "bong|head-in|sodomized|telebears" | shuf -n 1)"
+  figlet -f small -w 300  "Cluster  ${CLUSTER_ID:-???}  deployed successfully"'!' | cowsay -n -f "$(find /usr/share/cowsay -type f -name "*.cow" | grep "\.cow" | sed 's#.*/##;s/\.cow//' | egrep -v "bong|head-in|sodomized|telebears" | shuf -n 1)"
   echo "Completed successfully: CLUSTER ${CLUSTER_ID:-???}"
   log_status "Cluster deployed successfully"
 fi

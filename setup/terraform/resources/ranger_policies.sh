@@ -4,7 +4,7 @@ set -u
 
 ENABLE_TLS=$1
 
-CURL=(curl -Lsku admin:${THE_PWD} -H "Accept: application/json" -H "Content-Type: application/json")
+CURL=(curl --location-trusted -sku admin:${THE_PWD} -H "Accept: application/json" -H "Content-Type: application/json")
 
 if [[ $ENABLE_TLS == "yes" ]]; then
   HTTP_SCHEME="https"

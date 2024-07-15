@@ -95,7 +95,7 @@ function get_kafka_security_protocol() {
 }
 
 function get_create_cluster_tls_option() {
-  if [[ $(netstat -anp | grep ':7183 .*LISTEN ' | wc -l) > 0 ]]; then
+  if [[ $(openssl s_client -connect localhost:7183 </dev/null 2> /dev/null | grep -c CONNECTED) -gt 0 ]]; then
     echo "--tls-ca-cert $TRUSTSTORE_PEM"
   else
     echo ""
@@ -137,8 +137,9 @@ function get_stack_file() {
   local exclude_signed=${3:-no}
   for stack in $base_dir/stack.${namespace}.sh \
                $base_dir/stack.sh; do
-    if [ "${exclude_signed}" == "no" -a -e "${stack}.signed" ]; then
-      stack="${stack}.signed"
+    local signed_stack_file="${stack}.signed.el$(get_os_major_version)"
+    if [ "${exclude_signed}" == "no" -a -e "$signed_stack_file" ]; then
+      stack="$signed_stack_file"
       break
     elif [ -e "${stack}" ]; then
       break
@@ -153,6 +154,10 @@ function load_stack() {
   local validate_only=${3:-no}
   local exclude_signed=${4:-}
   local stack_file=$(get_stack_file $namespace $base_dir $exclude_signed)
+
+  # Set MAJOR_OS_VERSION before sourcing the stack
+  export MAJOR_OS_VERSION=$(get_os_major_version)
+
   source $stack_file
   # export all stack vars
   for var_name in $(grep -h "^[A-Z0-9_]*=" $stack_file | sed 's/=.*//' | sort -u); do
@@ -380,7 +385,7 @@ function validate_stack() {
 
 function check_for_presigned_url() {
   local url="$1"
-  url_file=$(get_stack_file $NAMESPACE $BASE_DIR exclude-signed).urls
+  url_file="$(get_stack_file $NAMESPACE $BASE_DIR exclude-signed).urls.el$(get_os_major_version)"
   signed_url=""
   if [ -s "$url_file" ]; then
     signed_url="$(fgrep "${url}-->" "$url_file" | sed 's/.*-->//')"
@@ -970,7 +975,7 @@ function wait_for_cm() {
           --fail \
           --head \
           --insecure \
-          --location \
+          --location-trusted \
           --output /dev/null \
           --silent \
           --user "admin:${pwd}" \
@@ -1305,7 +1310,13 @@ function detect_docker_device() {
 
 function enable_py3() {
   export MANPATH=
-  source /opt/rh/rh-python38/enable
+  # On CentOS 7, we use the rh-python38 package, which needs to be activated.
+  # On CentOS/RHEL 8, we use the python38 package, which is active by default.
+  [[ -f /opt/rh/rh-python38/enable ]] && source /opt/rh/rh-python38/enable
+  if [[ $(python -c 'import sys; print(sys.version_info.major)') != "3" ]]; then
+    echo "ERROR: Python 3 is not active."
+    exit 1
+  fi
 }
 
 function get_public_ip() {
@@ -1330,48 +1341,74 @@ function deploy_os_prereqs() {
     sed -i 's/SELINUX=.*/SELINUX=disabled/' /etc/selinux/config
   fi
 
-  log_status "Installing EPEL repo"
-  yum erase -y epel-release || true; rm -f /etc/yum.repos.r/epel* || true
-  if [[ $(get_os_major_version) == "8" ]]; then
-    dnf config-manager --set-enabled powertools
-    dnf -y install epel-release epel-next-release
-  else
-    # In July 2024 Centos 7 reached EoL and the repo was moved to the CentOS Vault.
-    # The commands below update YUM repo file accordingly, if needed
-    patch_yum_repos_for_centos
-    yum_install epel-release
-    # The EPEL repo has intermittent refresh issues that cause errors like the one below.
-    # Switch to baseurl to avoid those issues when using the metalink option.
-    # Error: https://.../repomd.xml: [Errno -1] repomd.xml does not match metalink for epel
-    sed -i 's/metalink=/#metalink=/;s/#*baseurl=/baseurl=/' /etc/yum.repos.d/epel*.repo
-  fi
-  yum clean all
-  rm -rf /var/cache/yum/
-  set +e
-  # Load and accept GPG keys
-  yum makecache -y || true
-  yum repolist
-  RET=$?
-  set -e
-  if [[ $RET != 0 ]]; then
-    # baseurl failed, so we'll revert to the original metalink
-    sed -i 's/#*metalink=/metalink=/;s/baseurl=/#baseurl=/' /etc/yum.repos.d/epel*.repo
-    yum repolist
+  log_status "Ensure domain search list does not contain nip.io"
+  fix_resolv_conf
+
+  if [[ $(get_os_type) == "RHEL" ]]; then
+    log_status "Disable RHEL Subscription Manager"
+    sed -i.bak 's/^ *enabled=.*/enabled=0/' /etc/yum/pluginconf.d/subscription-manager.conf
   fi
 
+  log_status "Installing EPEL repo"
+  install_epel
+
   log_status "Installing base dependencies"
-  yum_install vim wget curl git bind-utils figlet cowsay jq rng-tools
+  yum_install vim wget curl git bind-utils figlet cowsay jq rng-tools rsync
   # For troubleshooting purposes, when needed
   yum_install sysstat strace iotop lsof
 }
 
 function deploy_cluster_prereqs() {
   log_status "Installing cluster dependencies"
-  # Install RH python repo for CentOS
-  yum_install centos-release-scl
-  patch_yum_repos_for_centos
+  # Install Python 3.8
+  install_python
+
   # Install dependencies
-  yum_install nodejs gcc-c++ make shellinabox mosquitto transmission-cli rh-python38 rh-python38-python-devel httpd
+  yum_install nodejs gcc-c++ make mosquitto transmission-cli httpd
+
+  # ShellInABox
+  if [[ $(get_os_major_version) == "7" ]]; then
+    yum_install shellinabox
+  else
+    # At the time of this edit, there's no package of shellinabox for RHEL/CentOS 8 in EPEL
+    yum_install openssl-devel pam-devel zlib-devel autoconf automake libtool
+    rm -rf /tmp/shellinabox
+    git clone https://github.com/shellinabox/shellinabox.git /tmp/shellinabox
+    pushd /tmp/shellinabox
+    autoreconf -i
+    ./configure --disable-runtime-loading --disable-pam
+    sed -E -i 's/(^LIBS.*)/\1-lssl -lcrypto /' Makefile
+    sed -E -i '/^\s*debian\// d' Makefile
+
+    make install
+    mkdir -p /usr/share/shellinabox
+    cp shellinabox/*.css /usr/share/shellinabox/
+
+    useradd -c "Shellinabox" -d /var/lib/shellinabox -s /sbin/nologin -U shellinabox
+    cat <<'EOF' > /etc/sysconfig/shellinaboxd
+USER=shellinabox
+GROUP=shellinabox
+CERTDIR=/var/lib/shellinabox
+PORT=4200
+OPTS="--disable-ssl-menu -s /:LOGIN"
+EOF
+
+    cat <<'EOF' > /usr/lib/systemd/system/shellinaboxd.service
+[Unit]
+Description=Shell In A Box daemon
+After=network.target nss-lookup.target
+[Service]
+EnvironmentFile=-/etc/sysconfig/shellinaboxd
+WorkingDirectory=/usr/share/shellinabox
+ExecStart=/usr/local/bin/shellinaboxd -u $USER -g $GROUP --cert=${CERTDIR} --port=${PORT} $OPTS
+Restart=on-failure
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    popd
+  fi
+
   # Below is needed for secure clusters (required by Impyla)
   yum_install cyrus-sasl-md5 cyrus-sasl-plain cyrus-sasl-gssapi cyrus-sasl-devel
 }
@@ -1449,13 +1486,9 @@ EOF
   sysctl -p
   timedatectl set-timezone UTC || true
 
-  log_status "Disabling firewalls"
-  iptables-save > $BASE_DIR/firewall.rules
-  FWD_STATUS=$(systemctl is-active firewalld || true)
-  if [[ "${FWD_STATUS}" != "unknown" ]]; then
-    systemctl disable firewalld
-    systemctl stop firewalld
-  fi
+  log_status "Disabling firewalls, if configured"
+  systemctl disable firewalld || true
+  systemctl stop firewalld || true
 
   log_status "Enabling password authentication"
   sed -i.bak 's/PasswordAuthentication *no/PasswordAuthentication yes/' /etc/ssh/sshd_config
@@ -1498,6 +1531,17 @@ EOF
 
 }
 
+function fix_resolv_conf() {
+  if [[ $(systemctl list-unit-files | grep -c ^NetworkManager.service) -gt 0 ]]; then
+    mkdir -p /etc/NetworkManager/conf.d
+    echo -e "[main]\ndns=none" > /etc/NetworkManager/conf.d/90-dns-none.conf # Prevent NM attempts to restore resolv.conf
+    systemctl reload NetworkManager
+  fi
+  chattr -i /etc/resolv.conf
+  sed -i 's/[^ ]*nip.io//g' /etc/resolv.conf
+  chattr +i /etc/resolv.conf # Ensure nothing else modify resolv.conf
+}
+
 function download_parcels() {
   mkdir -p /opt/cloudera/parcel-repo
   mkdir -p /opt/cloudera/parcels
@@ -1513,9 +1557,9 @@ function download_parcels() {
     manifest_url="$(check_for_presigned_url "${url%%/}/manifest.json")"
     paywall_curl "$manifest_url" "/tmp/manifest.json"
     # Find the parcel name for the specific component and version
-    parcel_name=$(jq -r '.parcels[] | select(.parcelName | contains("'"$version"'-el7.parcel")) | select(.components[] | .name == "'"$component"'").parcelName' /tmp/manifest.json)
+    parcel_name=$(jq -r '.parcels[] | select(.parcelName | contains("'"$version"'-el'"$(get_os_major_version)"'.parcel")) | select(.components[] | .name == "'"$component"'").parcelName' /tmp/manifest.json)
     # Create the hash file
-    hash=$(jq -r '.parcels[] | select(.parcelName | contains("'"$version"'-el7.parcel")) | select(.components[] | .name == "'"$component"'").hash' /tmp/manifest.json)
+    hash=$(jq -r '.parcels[] | select(.parcelName | contains("'"$version"'-el'"$(get_os_major_version)"'.parcel")) | select(.components[] | .name == "'"$component"'").hash' /tmp/manifest.json)
     echo "$hash" > "/opt/cloudera/parcel-repo/${parcel_name}.sha"
     if [[ ! -f "/opt/cloudera/parcel-repo/${parcel_name}" || $(sha1sum "/opt/cloudera/parcel-repo/${parcel_name}" 2> /dev/null || true) != "$hash" ]]; then
       # Download the parcel file - in the background
@@ -1793,7 +1837,7 @@ EOF
   local job_id=$(jq '.id' $ecs_call_log)
 
   while true; do
-    [[ $(curl -s -k -L -u admin:"${THE_PWD}" "$(get_cm_base_url)/api/v19/commands/$job_id" | jq -r '.active') == "false" ]] && break
+    [[ $(curl -s -k --location-trusted -u admin:"${THE_PWD}" "$(get_cm_base_url)/api/v19/commands/$job_id" | jq -r '.active') == "false" ]] && break
     echo "Waiting for ECS setup to finish"
     sleep 1
   done
@@ -1880,7 +1924,19 @@ function install_java() {
     mkdir -p "$java_home"
     tar -C "$java_home" --strip-components=1 -xvf "$tmp_tarball"
     rm -f $tmp_tarball
-    set_java_alternatives "$java_home"
+    if [[ -z ${JAVA_PACKAGE_NAME:-} ]]; then
+      set_java_alternatives "$java_home"
+    else
+      # BIGTOP_JAVA_MAJOR defines which Java version will be used by CDH services.
+      # Some services, like CSA, still don't support Java 17. So, if OpenJDK 17 is installed and the OS-packaged
+      # Java is present, set BIGTOP_JAVA_MAJOR to the major version of the latter to avoid problems
+      if [[ $major_version -ne 17 ]]; then
+        bigtop_java_major_version=$major_version
+      else
+        bigtop_java_major_version=$(java -version 2>&1 | awk -F\" '/version/ {split($2, n, "."); print n[1]}')
+      fi
+      echo "BIGTOP_JAVA_MAJOR=$bigtop_java_major_version" > /etc/profile.d/cdp.sh
+    fi
   fi
 }
 
@@ -1898,13 +1954,65 @@ function get_os_major_version() {
   grep "^VERSION=" /etc/os-release 2> /dev/null | sed 's/VERSION=["'\'']//g' | grep -o "^."
 }
 
+function install_epel() {
+  yum erase -y epel-release || true; rm -f /etc/yum.repos.r/epel* || true
+  if [[ $(get_os_major_version) == "8" ]]; then
+    if [[ $(get_os_type) == "CENTOS" ]]; then
+      patch_yum_repos_for_centos
+      dnf config-manager --set-enabled powertools
+      dnf -y install epel-release epel-next-release
+    else
+      dnf -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-8.noarch.rpm
+    fi
+  else
+    patch_yum_repos_for_centos
+    yum_install epel-release
+  fi
+  yum clean all
+  rm -rf /var/cache/yum/
+  # Load and accept GPG keys
+  yum makecache -y || true
+  yum repolist
+}
+
 function patch_yum_repos_for_centos() {
   # In July 2024 Centos 7 reached EoL and the repo was moved to the CentOS Vault.
   # The mirrorlist.centos.org host was also decommissioned.
   # The commands below update YUM repo file accordingly, if needed
   if [[ $(get_os_type) == "CENTOS" ]]; then
-    sed -i s/mirror.centos.org/vault.centos.org/g /etc/yum.repos.d/*.repo
-    sed -i s/^#.*baseurl=http/baseurl=http/g /etc/yum.repos.d/*.repo
-    sed -i s/^mirrorlist=http/#mirrorlist=http/g /etc/yum.repos.d/*.repo
+    sed -i 's/mirror.centos.org/vault.centos.org/g' /etc/yum.repos.d/*.repo
+    sed -i 's/^#.*baseurl=http/baseurl=http/g' /etc/yum.repos.d/*.repo
+    sed -i 's/^mirrorlist=http/#mirrorlist=http/g' /etc/yum.repos.d/*.repo
+    sed -i 's/metalink=/#metalink=/' /etc/yum.repos.d/*.repo
   fi
+}
+
+function install_pg_repo() {
+  if [[ $(rpm -qa | grep pgdg-redhat-repo- | wc -l) -eq 0 ]]; then
+    if [[ $(get_os_major_version) -eq 7 ]]; then
+      yum_install "https://download.postgresql.org/pub/repos/yum/reporpms/EL-7-x86_64/pgdg-redhat-repo-latest.noarch.rpm"
+    else
+      # Ref: https://www.postgresql.org/download/linux/redhat/
+      sudo dnf install -y https://download.postgresql.org/pub/repos/yum/reporpms/EL-8-x86_64/pgdg-redhat-repo-latest.noarch.rpm
+      sudo dnf -qy module disable postgresql
+    fi
+  fi
+}
+
+function install_python() {
+  if [[ $(get_os_major_version) == "7" ]]; then
+    yum_install centos-release-scl
+    patch_yum_repos_for_centos
+    yum_install rh-python38 rh-python38-python-devel
+    rm -f /usr/bin/python3 /usr/bin/pip3 /usr/local/bin/python3.8
+    ln -s /opt/rh/rh-python38/root/bin/python3 /usr/bin/python3
+    ln -s /opt/rh/rh-python38/root/bin/pip3 /usr/bin/pip3
+    ln -s /opt/rh/rh-python38/root/usr/bin/python3.8 /usr/local/bin/python3.8
+    enable_py3
+  else
+    yum_install python38 python38-devel
+    alternatives --set python /usr/bin/python3
+    alternatives --install /usr/bin/pip pip /usr/bin/pip3 1
+  fi
+  pip install --quiet --upgrade pip
 }

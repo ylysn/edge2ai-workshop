@@ -44,6 +44,79 @@ function yum_install() {
   done
 }
 
+function install_epel() {
+  yum erase -y epel-release || true; rm -f /etc/yum.repos.r/epel* || true
+  if [[ $(get_os_major_version) == "8" ]]; then
+    if [[ $(get_os_type) == "CENTOS" ]]; then
+      patch_yum_repos_for_centos
+      dnf config-manager --set-enabled powertools
+      dnf -y install epel-release epel-next-release
+    else
+      dnf -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-8.noarch.rpm
+    fi
+  else
+    patch_yum_repos_for_centos
+    yum_install epel-release
+  fi
+  yum clean all
+  rm -rf /var/cache/yum/
+  # Load and accept GPG keys
+  yum makecache -y || true
+  yum repolist
+}
+
+function install_pg_repo() {
+  if [[ $(rpm -qa | grep pgdg-redhat-repo- | wc -l) -eq 0 ]]; then
+    if [[ $(get_os_major_version) -eq 7 ]]; then
+      yum_install "https://download.postgresql.org/pub/repos/yum/reporpms/EL-7-x86_64/pgdg-redhat-repo-latest.noarch.rpm"
+    else
+      # Ref: https://www.postgresql.org/download/linux/redhat/
+      sudo dnf install -y https://download.postgresql.org/pub/repos/yum/reporpms/EL-8-x86_64/pgdg-redhat-repo-latest.noarch.rpm
+      sudo dnf -qy module disable postgresql
+    fi
+  fi
+}
+
+function install_python() {
+  if [[ $(get_os_major_version) == "7" ]]; then
+    yum_install centos-release-scl
+    patch_yum_repos_for_centos
+    yum_install rh-python38 rh-python38-python-devel
+    /opt/rh/rh-python38/root/usr/bin/pip3 install --quiet --upgrade pip virtualenv
+    MANPATH= source /opt/rh/rh-python38/enable
+    cat /opt/rh/rh-python38/enable >> /etc/profile
+  else
+    yum_install python38 python38-devel
+    /usr/bin/pip3.8 install --quiet --upgrade pip virtualenv
+  fi
+}
+
+function patch_yum_repos_for_centos() {
+  # In July 2024 Centos 7 reached EoL and the repo was moved to the CentOS Vault.
+  # The mirrorlist.centos.org host was also decommissioned.
+  # The commands below update YUM repo file accordingly, if needed
+  if [[ $(get_os_type) == "CENTOS" ]]; then
+    sed -i 's/mirror.centos.org/vault.centos.org/g' /etc/yum.repos.d/*.repo
+    sed -i 's/^#.*baseurl=http/baseurl=http/g' /etc/yum.repos.d/*.repo
+    sed -i 's/^mirrorlist=http/#mirrorlist=http/g' /etc/yum.repos.d/*.repo
+    sed -i 's/metalink=/#metalink=/' /etc/yum.repos.d/*.repo
+  fi
+}
+
+function get_os_major_version() {
+  grep "^VERSION=" /etc/os-release 2> /dev/null | sed 's/VERSION=["'\'']//g' | grep -o "^."
+}
+
+function get_os_type() {
+  if grep "^NAME=.*Red Hat Enterprise Linux" /etc/os-release > /dev/null 2>&1; then
+    echo "RHEL"
+  elif grep -i "^NAME=.*centos" /etc/os-release > /dev/null 2>&1; then
+    echo "CENTOS"
+  else
+    echo "UNKNOWN"
+  fi
+}
+
 log_status "Disabling SElinux"
 sudo setenforce 0
 sudo sed -i.bak 's/^ *SELINUX=.*/SELINUX=disabled/' /etc/selinux/config
@@ -58,22 +131,23 @@ net.ipv6.conf.lo.disable_ipv6 = 1
 EOF
 sudo sysctl -p
 
-log_status "Installing what we need"
-sudo yum erase -y epel-release || true
-rm -f /etc/yum.repos.r/epel* || true
-yum_install epel-release
-
-# Installing Postgresql repo
-if [[ $(rpm -qa | grep pgdg-redhat-repo- | wc -l) -eq 0 ]]; then
-  yum_install https://download.postgresql.org/pub/repos/yum/reporpms/EL-7-x86_64/pgdg-redhat-repo-latest.noarch.rpm
+if [[ $(get_os_type) == "RHEL" ]]; then
+  log_status "Disable RHEL Subscription Manager"
+  sudo sed -i.bak 's/^ *enabled=.*/enabled=0/' /etc/yum/pluginconf.d/subscription-manager.conf
 fi
 
-# The EPEL repo has intermittent refresh issues that cause errors like the one below.
-# Switch to baseurl to avoid those issues when using the metalink option.
-# Error: https://.../repomd.xml: [Errno -1] repomd.xml does not match metalink for epel
-sudo sed -i 's/metalink=/#metalink=/;s/#*baseurl=/baseurl=/' /etc/yum.repos.d/epel*.repo
+log_status "Installing EPEL and PG repositories and Python"
+sudo bash -c "$(for func in yum_install install_epel install_pg_repo install_python patch_yum_repos_for_centos get_os_type get_os_major_version; do declare -f "$func"; done); set -x; set -e; set -u; set -o pipefail; install_epel; install_pg_repo; install_python"
+# Since the installation above is done in a sub-shell, ensure Python's setting are effective
+hash -r
+[[ -f /opt/rh/rh-python38/enable ]] && MANPATH= source /opt/rh/rh-python38/enable || true
 
-yum_install python36-pip python36 supervisor nginx postgresql${PG_VERSION}-server postgresql${PG_VERSION} postgresql${PG_VERSION}-contrib figlet cowsay
+log_status "Installing needed tools"
+yum_install supervisor nginx postgresql${PG_VERSION}-server postgresql${PG_VERSION} postgresql${PG_VERSION}-contrib figlet cowsay
+# Supervisor's install can mess with Python paths, so we fix it if needed
+if [[ -f /usr/bin/python3.8 ]]; then
+  sudo alternatives --set python3 /usr/bin/python3.8
+fi
 
 log_status "Configuring PostgreSQL"
 sudo bash -c 'echo '\''LC_ALL="en_US.UTF-8"'\'' >> /etc/locale.conf'
@@ -106,9 +180,10 @@ create database ${DB_NAME} owner ${DB_USER} encoding 'UTF8';
 EOF
 
 log_status "Preparing virtualenv"
+set +e; python -V; type python; pip -V; type pip; set -e
 python3 -m venv $BASE_DIR/env
 source $BASE_DIR/env/bin/activate
-pip install --quiet --upgrade pip virtualenv
+set +e; python -V; type python; pip -V; type pip; set -e
 pip install --progress-bar off -r $BASE_DIR/requirements.txt
 pip install --progress-bar off gunicorn
 
@@ -255,5 +330,5 @@ sudo systemctl start nginx
 sudo systemctl reload nginx
 
 log_status "Setup completed"
-figlet -f small -w 300  "Web server deployed successfully"'!' | cowsay -n -f "$(ls -1 /usr/share/cowsay | grep "\.cow" | sed 's/\.cow//' | egrep -v "bong|head-in|sodomized|telebears" | shuf -n 1)"
+figlet -f small -w 300  "Web server deployed successfully"'!' | cowsay -n -f "$(find /usr/share/cowsay -type f -name "*.cow" | grep "\.cow" | sed 's#.*/##;s/\.cow//' | egrep -v "bong|head-in|sodomized|telebears" | shuf -n 1)"
 echo "Completed successfully: WEB"
