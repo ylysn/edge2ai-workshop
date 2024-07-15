@@ -25,7 +25,7 @@ AVAILABLE_SCRIPTS=(
   tf-admin
 )
 
-EC2_PRICES_URL_TEMPLATE=https://raw.githubusercontent.com/yeo/ec2.shop/master/data/REGION-ondemand.json
+EC2_PRICES_URL_TEMPLATE=https://raw.githubusercontent.com/yeo/ec2.shop/master/data/ec2/REGION-ondemand.json
 
 function get_instance_hourly_cost() {
   local instance_type=$1
