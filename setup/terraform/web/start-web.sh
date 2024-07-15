@@ -44,6 +44,31 @@ function yum_install() {
   done
 }
 
+function get_os_type() {
+  if grep "^NAME=.*Red Hat Enterprise Linux" /etc/os-release > /dev/null 2>&1; then
+    echo "RHEL"
+  elif grep -i "^NAME=.*centos" /etc/os-release > /dev/null 2>&1; then
+    echo "CENTOS"
+  else
+    echo "UNKNOWN"
+  fi
+}
+
+function get_os_major_version() {
+  grep "^VERSION=" /etc/os-release 2> /dev/null | sed 's/VERSION=["'\'']//g' | grep -o "^."
+}
+
+function patch_yum_repos_for_centos() {
+  # In July 2024 Centos 7 reached EoL and the repo was moved to the CentOS Vault.
+  # The mirrorlist.centos.org host was also decommissioned.
+  # The commands below update YUM repo file accordingly, if needed
+  if [[ $(get_os_type) == "CENTOS" ]]; then
+    sudo sed -i s/mirror.centos.org/vault.centos.org/g /etc/yum.repos.d/*.repo
+    sudo sed -i s/^#.*baseurl=http/baseurl=http/g /etc/yum.repos.d/*.repo
+    sudo sed -i s/^mirrorlist=http/#mirrorlist=http/g /etc/yum.repos.d/*.repo
+  fi
+}
+
 log_status "Disabling SElinux"
 sudo setenforce 0
 sudo sed -i.bak 's/^ *SELINUX=.*/SELINUX=disabled/' /etc/selinux/config
@@ -61,19 +86,36 @@ sudo sysctl -p
 log_status "Installing what we need"
 sudo yum erase -y epel-release || true
 rm -f /etc/yum.repos.r/epel* || true
-yum_install epel-release
-
+if [[ $(get_os_major_version) == "8" || $(get_os_major_version) == "9" ]]; then
+  # dnf config-manager --set-enabled powertools
+  # dnf -y install epel-release epel-next-release
+  sudo dnf -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-$(get_os_major_version).noarch.rpm
+else
+  # In July 2024 Centos 7 reached EoL and the repo was moved to the CentOS Vault.
+  # The commands below update YUM repo file accordingly, if needed
+  patch_yum_repos_for_centos
+  yum_install epel-release
+  # The EPEL repo has intermittent refresh issues that cause errors like the one below.
+  # Switch to baseurl to avoid those issues when using the metalink option.
+  # Error: https://.../repomd.xml: [Errno -1] repomd.xml does not match metalink for epel
+  sudo sed -i 's/metalink=/#metalink=/;s/#*baseurl=/baseurl=/' /etc/yum.repos.d/epel*.repo
+fi
 # Installing Postgresql repo
 if [[ $(rpm -qa | grep pgdg-redhat-repo- | wc -l) -eq 0 ]]; then
-  yum_install https://download.postgresql.org/pub/repos/yum/reporpms/EL-7-x86_64/pgdg-redhat-repo-latest.noarch.rpm
+  yum_install https://download.postgresql.org/pub/repos/yum/reporpms/EL-$(get_os_major_version)-x86_64/pgdg-redhat-repo-latest.noarch.rpm
 fi
 
-# The EPEL repo has intermittent refresh issues that cause errors like the one below.
-# Switch to baseurl to avoid those issues when using the metalink option.
-# Error: https://.../repomd.xml: [Errno -1] repomd.xml does not match metalink for epel
-sudo sed -i 's/metalink=/#metalink=/;s/#*baseurl=/baseurl=/' /etc/yum.repos.d/epel*.repo
 
-yum_install python36-pip python36 supervisor nginx postgresql${PG_VERSION}-server postgresql${PG_VERSION} postgresql${PG_VERSION}-contrib figlet cowsay
+if [[ $(get_os_type) == "CENTOS" ]]; then
+  yum_install python36-pip python36 supervisor nginx postgresql${PG_VERSION}-server postgresql${PG_VERSION} postgresql${PG_VERSION}-contrib figlet cowsay
+else
+  sudo yum -qy module disable postgresql
+  if [[ $(get_os_major_version) == "8" ]]; then
+    yum_install python3-pip python36 supervisor nginx postgresql${PG_VERSION}-server postgresql${PG_VERSION} postgresql${PG_VERSION}-contrib figlet cowsay
+  else
+    yum_install python3-pip python3 supervisor nginx postgresql${PG_VERSION}-server postgresql${PG_VERSION} postgresql${PG_VERSION}-contrib figlet cowsay
+  fi
+fi
 
 log_status "Configuring PostgreSQL"
 sudo bash -c 'echo '\''LC_ALL="en_US.UTF-8"'\'' >> /etc/locale.conf'
@@ -115,7 +157,7 @@ pip install --progress-bar off gunicorn
 log_status "Setting up environment"
 cat > $BASE_DIR/.env <<EOF
 SECRET_KEY=$(python3 -c "import uuid; print(uuid.uuid4().hex)")
-DATABASE_URL=postgresql+psycopg2://${DB_USER}:${DB_PWD}@${DB_HOST}:5432/${DB_NAME}
+DATABASE_URL=postgresql+psycopg2://${DB_USER}:${DB_PWD}@localhost:5432/${DB_NAME}
 EOF
 
 log_status "Initializing database tables"
@@ -255,5 +297,10 @@ sudo systemctl start nginx
 sudo systemctl reload nginx
 
 log_status "Setup completed"
-figlet -f small -w 300  "Web server deployed successfully"'!' | cowsay -n -f "$(ls -1 /usr/share/cowsay | grep "\.cow" | sed 's/\.cow//' | egrep -v "bong|head-in|sodomized|telebears" | shuf -n 1)"
+if [[ $(get_os_type) == "CENTOS" ]]; then
+  export COWPATH=/usr/share/cowsay
+else
+  export COWPATH=/usr/share/cowsay/cows
+fi
+figlet -f small -w 300  "Web server deployed successfully"'!' | cowsay -n -f "$(ls -1 $COWPATH | grep "\.cow" | sed 's/\.cow//' | egrep -v "bong|head-in|sodomized|telebears" | shuf -n 1)"
 echo "Completed successfully: WEB"

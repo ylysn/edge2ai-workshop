@@ -26,7 +26,7 @@ IPA_HOST=${6:-}
 IPA_PRIVATE_IP=${7:-}
 ECS_PUBLIC_DNS=${8:-}
 ECS_PRIVATE_IP=${9:-}
-export NAMESPACE DOCKER_DEVICE IPA_HOST
+export NAMESPACE DOCKER_DEVICE IPA_HOST ECS_PUBLIC_DNS
 
 if [[ ! -z ${CLUSTER_ID:-} ]]; then
   PEER_CLUSTER_ID=$(( (CLUSTER_ID/2)*2 + (CLUSTER_ID+1)%2 ))
@@ -137,7 +137,12 @@ EOF
 
   log_status "Installing Postgresql repo"
   if [[ $(rpm -qa | grep pgdg-redhat-repo- | wc -l) -eq 0 ]]; then
-    yum_install https://download.postgresql.org/pub/repos/yum/reporpms/EL-7-x86_64/pgdg-redhat-repo-latest.noarch.rpm
+    yum_install https://download.postgresql.org/pub/repos/yum/reporpms/EL-$(get_os_major_version)-x86_64/pgdg-redhat-repo-latest.noarch.rpm
+    if [[ $(get_os_type) == "CENTOS" ]]; then
+      break
+    else
+      yum -qy module disable postgresql
+    fi
   fi
 
   log_status "Installing Cloudera Manager"
@@ -159,25 +164,15 @@ EOF
   pip install --quiet --upgrade pip
   # re-source after pip upgrade due to change in path of the pip executable
   enable_py3
-  pip install --progress-bar off \
-    cm-client==44.0.3 \
-    impyla==0.17.0 \
-    Jinja2==3.0.3 \
-    kerberos==1.3.1 \
-    nipyapi==0.17.1 \
-    paho-mqtt==1.6.1 \
-    psycopg2-binary==2.9.3 \
-    pytest==6.2.5 \
-    PyYAML==6.0 \
-    requests==2.28.0 \
-    requests-gssapi==1.2.3 \
-    requests-kerberos==0.14.0 \
-    thrift-sasl==0.4.3
-
-  rm -f /usr/bin/python3 /usr/bin/pip3 /usr/local/bin/python3.8
-  ln -s /opt/rh/rh-python38/root/bin/python3 /usr/bin/python3
-  ln -s /opt/rh/rh-python38/root/bin/pip3 /usr/bin/pip3
-  ln -s /opt/rh/rh-python38/root/usr/bin/python3.8 /usr/local/bin/python3.8
+  pip install --progress-bar off -r $BASE_DIR/requirements.txt
+  if [[ $(get_os_type) == "CENTOS" ]]; then
+    rm -f /usr/bin/python3 /usr/bin/pip3 /usr/local/bin/python3.8
+    ln -s /opt/rh/rh-python38/root/bin/python3 /usr/bin/python3
+    ln -s /opt/rh/rh-python38/root/bin/pip3 /usr/bin/pip3
+    ln -s /opt/rh/rh-python38/root/usr/bin/python3.8 /usr/local/bin/python3.8
+  else
+    break
+  fi
 
   log_status "Installing JDBC connector"
   cp /usr/share/java/postgresql-jdbc.jar /usr/share/java/postgresql-connector-java.jar
@@ -275,7 +270,7 @@ EOF
 
         # Ensure MiNiFi uses Python 3.8 instead of the default system version (3.6)
         if [[ -f /etc/rc.d/init.d/minifi ]]; then
-          sed -i 's#export MINIFI_HOME#source /opt/rh/rh-python38/enable\nexport MINIFI_HOME#' /etc/rc.d/init.d/minifi
+          sed -i 's#export MINIFI_HOME#source /opt/rh/rh-python38/enable || true\nexport MINIFI_HOME#' /etc/rc.d/init.d/minifi
         else
           # TODO: In recent MiNiFi versions the minifi.sh install script no longer creates /etc/rc.d/init.d/minifi
           # TODO: Instead, it creates /usr/local/lib/systemd/system/minifi.service. We need another way to inject
@@ -287,7 +282,7 @@ EOF
         patchelf /opt/cloudera/cem/minifi/extensions/libminifi-python-script-extension.so --replace-needed libpython3.so libpython3.8.so
 
         # Install needed modules
-        source /opt/rh/rh-python38/enable
+        source /opt/rh/rh-python38/enable || true
         pip install numpy pandas scikit-learn==1.1.1 xgboost==1.6.2
       fi
     fi
@@ -383,7 +378,7 @@ EOF
   )
 
   # Disable EPEL repo to avoid issues during agent deployment
-  sed -i 's/enabled=1/enabled=0/' /etc/yum.repos.d/epel*
+  sed -i 's/enabled=1/enabled=0/' /etc/yum.repos.d/epel* || true
 
   log_status "Finished image preinstall"
   touch "${PREINSTALL_COMPLETED_FLAG}"
@@ -466,9 +461,11 @@ systemctl restart shellinaboxd
 
 if [ "${HAS_CDSW:-}" == "1" ]; then
     echo "CDSW_BUILD is set to '${CDSW_BUILD}'"
-    if ! grep "CentOS Linux release 7.9" /etc/redhat-release > /dev/null 2>&1 ; then
-      # CDSW requires Centos 7.5, so we trick it to believe it is...
-      echo "CentOS Linux release 7.9.2009 (Core)" > /etc/redhat-release
+    if [[ $(get_os_type) == "CENTOS" ]]; then
+      if ! grep "CentOS Linux release 7.9" /etc/redhat-release > /dev/null 2>&1 ; then
+        # CDSW requires Centos 7.5, so we trick it to believe it is...
+        echo "CentOS Linux release 7.9.2009 (Core)" > /etc/redhat-release
+      fi
     fi
     if [[ "${DOCKER_DEVICE}" == "" ]]; then
       echo "ERROR: Could not find any candidate devices."
@@ -691,7 +688,7 @@ log_status "Restarting agent"
 systemctl restart cloudera-scm-agent
 
 log_status "Waiting for Cloudera Manager to be ready"
-wait_for_cm
+wait_for_cm $(is_tls_enabled)
 
 if [[ ${HAS_SRM:-0} == 1 ]]; then
   log_status "Creating external accounts"
@@ -1014,8 +1011,15 @@ if [ "${HAS_CDSW:-}" == "1" ]; then
   nohup python -u /tmp/resources/cdsw_setup.py --public-ip "$(echo "$PUBLIC_DNS" | sed -E 's/cdp.(.*).nip.io/\1/')" --model-pkl-file /tmp/resources/iot_model.pkl --password-file /tmp/resources/the_pwd.txt > /tmp/resources/cdsw_setup.log 2>&1 &
 fi
 
-if [[ ! -z ${ECS_PUBLIC_DNS:-} ]]; then
+if [[ "${HAS_ECS:-}" == "1" ]]; then
+  log_status "Starting ECS setup on ${ECS_PUBLIC_DNS}"
+  map_ipa_users
   install_ecs
+  # Enable ML Registry on Ozone
+  ENABLE_MLREG=1
+  install_cml $ECS_PUBLIC_DNS $ENABLE_MLREG
+  systemctl enable chronyd
+  log_status "Finished ECS setup on ${ECS_PUBLIC_DNS}"
 fi
 
 log_status "Cleaning up"
@@ -1023,7 +1027,12 @@ rm -f $BASE_DIR/stack.*.sh* $BASE_DIR/stack.sh* $BASE_DIR/.license
 
 if [[ ! -z ${CLUSTER_ID:-} ]]; then
   echo "At this point you can login into Cloudera Manager host on port 7180 and follow the deployment of the cluster"
-  figlet -f small -w 300  "Cluster  ${CLUSTER_ID:-???}  deployed successfully"'!' | cowsay -n -f "$(ls -1 /usr/share/cowsay | grep "\.cow" | sed 's/\.cow//' | egrep -v "bong|head-in|sodomized|telebears" | shuf -n 1)"
+  if [[ $(get_os_type) == "CENTOS" ]]; then
+    export COWPATH=/usr/share/cowsay
+  else
+    export COWPATH=/usr/share/cowsay/cows
+  fi
+  figlet -f small -w 300  "Cluster  ${CLUSTER_ID:-???}  deployed successfully"'!' | cowsay -n -f "$(ls -1 $COWPATH | grep "\.cow" | sed 's/\.cow//' | egrep -v "bong|head-in|sodomized|telebears" | shuf -n 1)"
   echo "Completed successfully: CLUSTER ${CLUSTER_ID:-???}"
   log_status "Cluster deployed successfully"
 fi
