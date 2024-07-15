@@ -534,7 +534,7 @@ function run_terraform() {
     terraform_cmd "${args[@]}" 2> >(tee $run_log >&2)
     ret=$?
     set -e
-    local timeouts=$(grep -c "timeout while waiting for plugin to start" $run_log)
+    local timeouts=$(egrep -c "timeout while|waiting for plugin to start" $run_log)
     rm -f $run_log
     # If run timed out because of plugin, keep trying. If the failure had another cause, abort.
     if [[ $ret == 0 || $timeouts -eq 0 ]]; then
