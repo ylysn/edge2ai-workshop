@@ -39,7 +39,13 @@ function check_url() {
   local url_template=$1
   local ip=$2
   local ok_pattern=$3
-  timeout 5 "${CURL[*]} $(url_for_ip "$url_template" "$ip")" 2>/dev/null | egrep "$ok_pattern" > /dev/null 2>&1 && echo Ok
+  if [[ ${DEBUG:-} != "" && $ok_pattern == *"NiFi"* ]]; then
+    local output=/tmp/nifi-debug.log
+    echo "--- ${CURL[*]} $(url_for_ip "$url_template" "$ip")" >> $output
+  else
+    local output=/dev/null
+  fi
+  timeout 10 "${CURL[*]} $(url_for_ip "$url_template" "$ip")" 2>/dev/null | tee -a $output | egrep "$ok_pattern" > /dev/null 2>&1 && echo Ok
 }
 
 # need to load the stack for calling get_service_urls
