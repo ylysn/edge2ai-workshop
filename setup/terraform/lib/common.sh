@@ -1295,7 +1295,20 @@ function yamlize() {
 function timeout() {
   local timeout_secs=$1
   local cmd=$2
-  python -c "import subprocess, sys; r = subprocess.run(sys.argv[2], shell=True, timeout=int(sys.argv[1])); exit(r.returncode)" "$timeout_secs" "$cmd" 2>&1 | (grep -v LC_CTYPE || true)
+  python -c '
+import subprocess, sys, signal
+timeout_secs = int(sys.argv[1])
+try:
+    p = subprocess.Popen(sys.argv[2], shell=True)
+    p.wait(timeout=timeout_secs)
+except subprocess.TimeoutExpired:
+    try:
+        os.kill(p.pid, signal.SIGTERM)
+    except:
+        pass
+    exit(143)
+exit(p.returncode)
+' "$timeout_secs" "$cmd" > >(grep -v LC_CTYPE || true) 2> >(grep -v LC_CTYPE >&2 || true)
 }
 
 #
