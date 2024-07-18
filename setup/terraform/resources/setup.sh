@@ -148,11 +148,17 @@ EOF
   log_status "Installing PostgreSQL"
   # PostgreSQL has a dependency on Java 8, so the install below will install the OpenJDK 8 package
   # We set the java alternatives manually here so that Java 8 doesn't take priority after the install
+  CURRENT_PYTHON=$(update-alternatives --display workshop-py3-38 | grep "link currently points to" | awk '{print $NF}' || true)
   CURRENT_JAVA=$(update-alternatives --display java | grep "link currently points to" | awk '{print $NF}')
   update-alternatives --set java "$CURRENT_JAVA"
   yum_install postgresql${PG_VERSION}-server postgresql${PG_VERSION} postgresql${PG_VERSION}-contrib postgresql-jdbc
+  # Fix Python 3 alternatives after PG install
+  if [[ $CURRENT_PYTHON != "" ]]; then
+    update-alternatives --set workshop-py3-38 "$CURRENT_PYTHON"
+  fi
   systemctl disable postgresql-${PG_VERSION}
 
+  log_status "Installing required Python modules"
   enable_py3
   pip install --progress-bar off \
     cm-client==44.0.3 \
@@ -1024,7 +1030,7 @@ rm -f $BASE_DIR/stack.*.sh* $BASE_DIR/stack.sh* $BASE_DIR/.license
 
 if [[ ! -z ${CLUSTER_ID:-} ]]; then
   echo "At this point you can login into Cloudera Manager host on port 7180 and follow the deployment of the cluster"
-  figlet -f small -w 300  "Cluster  ${CLUSTER_ID:-???}  deployed successfully"'!' | cowsay -n -f "$(find /usr/share/cowsay -type f -name "*.cow" | grep "\.cow" | sed 's#.*/##;s/\.cow//' | egrep -v "bong|head-in|sodomized|telebears" | shuf -n 1)"
+  figlet -f small -w 300  "Cluster  ${CLUSTER_ID:-???}  deployed successfully"'!' | /usr/bin/cowsay -n -f "$(find /usr/share/cowsay -type f -name "*.cow" | grep "\.cow" | sed 's#.*/##;s/\.cow//' | egrep -v "bong|head-in|sodomized|telebears" | shuf -n 1)"
   echo "Completed successfully: CLUSTER ${CLUSTER_ID:-???}"
   log_status "Cluster deployed successfully"
 fi

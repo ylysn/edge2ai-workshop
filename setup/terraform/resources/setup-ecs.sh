@@ -142,7 +142,7 @@ fi
 
 if [[ ! -z ${CLUSTER_ID:-} ]]; then
   echo "At this point you can login into Cloudera Manager host on port 7180 and follow the deployment of the cluster"
-  figlet -f small -w 300  "ECS  ${CLUSTER_ID:-???}  deployed successfully"'!' | cowsay -n -f "$(find /usr/share/cowsay -type f -name "*.cow" | grep "\.cow" | sed 's#.*/##;s/\.cow//' | egrep -v "bong|head-in|sodomized|telebears" | shuf -n 1)"
+  figlet -f small -w 300  "ECS  ${CLUSTER_ID:-???}  deployed successfully"'!' | /usr/bin/cowsay -n -f "$(find /usr/share/cowsay -type f -name "*.cow" | grep "\.cow" | sed 's#.*/##;s/\.cow//' | egrep -v "bong|head-in|sodomized|telebears" | shuf -n 1)"
   echo "Completed successfully: ECS ${CLUSTER_ID:-???}"
   log_status "ECS deployed successfully"
 fi

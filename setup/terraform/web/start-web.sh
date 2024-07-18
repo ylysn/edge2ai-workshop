@@ -82,6 +82,7 @@ function install_python() {
     yum_install centos-release-scl
     patch_yum_repos_for_centos
     yum_install rh-python38 rh-python38-python-devel
+    alternatives --install /usr/bin/python3 workshop-py3-38 /opt/rh/rh-python38/root/usr/bin/python3.8 99999999
     /opt/rh/rh-python38/root/usr/bin/pip3 install --quiet --upgrade pip virtualenv
     MANPATH= source /opt/rh/rh-python38/enable
     cat /opt/rh/rh-python38/enable >> /etc/profile
@@ -330,5 +331,5 @@ sudo systemctl start nginx
 sudo systemctl reload nginx
 
 log_status "Setup completed"
-figlet -f small -w 300  "Web server deployed successfully"'!' | cowsay -n -f "$(find /usr/share/cowsay -type f -name "*.cow" | grep "\.cow" | sed 's#.*/##;s/\.cow//' | egrep -v "bong|head-in|sodomized|telebears" | shuf -n 1)"
+figlet -f small -w 300  "Web server deployed successfully"'!' | /usr/bin/cowsay -n -f "$(find /usr/share/cowsay -type f -name "*.cow" | grep "\.cow" | sed 's#.*/##;s/\.cow//' | egrep -v "bong|head-in|sodomized|telebears" | shuf -n 1)"
 echo "Completed successfully: WEB"

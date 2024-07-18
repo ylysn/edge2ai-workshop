@@ -164,14 +164,25 @@ if [[ -f /etc/sysconfig/network ]]; then
 fi
 echo "HOSTNAME=${PUBLIC_DNS}" >> /etc/sysconfig/network
 
+if [[ $(get_os_type) == "RHEL" ]]; then
+  log_status "Disable RHEL Subscription Manager"
+  sed -i.bak 's/^ *enabled=.*/enabled=0/' /etc/yum/pluginconf.d/subscription-manager.conf
+fi
+
 log_status "Installing IPA server"
 yum erase -y epel-release || true; rm -f /etc/yum.repos.r/epel* || true
 install_epel
 
 log_status "Installing needed tools"
-yum_install cowsay figlet ipa-server rng-tools
-yum -y upgrade nss-tools
+yum_install cowsay figlet rng-tools rsync nss-tools
+yum -y upgrade nss-tools # Update nss-tools in case it had been previously installed
 systemctl restart dbus
+if [[ $(get_os_major_version) == "8" ]]; then
+  sudo yum -y install @idm:DL1
+  sudo yum -y install freeipa-server ipa-server-dns bind-dyndb-ldap
+else
+  yum_install ipa-server
+fi
 
 log_status "Installing IPA server"
 ipa-server-install --hostname=$(hostname -f) -r $REALM_NAME -n $(hostname -d) -a "$IPA_ADMIN_PASSWORD" -p "$DIRECTORY_MANAGER_PASSWORD" -U
@@ -186,7 +197,7 @@ log_status "Creating Cloudera Manager principal user and adding it to admins gro
 add_user admin /home/admin admins $ADMINS_GROUP $USERS_GROUP "trust admins" shadow supergroup
 
 kinit -kt "${KEYTABS_DIR}/admin.keytab" admin
-ipa krbtpolicy-mod --maxlife=3600 --maxrenew=604800 || true
+ipa krbtpolicy-mod --maxlife=84600 --maxrenew=604800 || true
 
 log_status "Creating LDAP bind user"
 add_user ldap_bind_user /home/ldap_bind_user $USERS_GROUP
@@ -217,9 +228,14 @@ setenforce 0
 sed -i 's/SELINUX=.*/SELINUX=disabled/' /etc/selinux/config
 
 log_status "Making keytabs and CA cert available through the web server"
+systemctl stop httpd # Stop web server temporarily; it will be restarted upon reboot
 ln -s /keytabs /var/www/html/keytabs
 ln -s /etc/ipa/ca.crt /var/www/html/ca.crt
 
-figlet -f small -w 300  "IPA server deployed successfully"'!' | cowsay -n -f "$(find /usr/share/cowsay -type f -name "*.cow" | grep "\.cow" | sed 's#.*/##;s/\.cow//' | egrep -v "bong|head-in|sodomized|telebears" | shuf -n 1)"
+figlet -f small -w 300  "IPA server deployed successfully"'!' | /usr/bin/cowsay -n -f "$(find /usr/share/cowsay -type f -name "*.cow" | grep "\.cow" | sed 's#.*/##;s/\.cow//' | egrep -v "bong|head-in|sodomized|telebears" | shuf -n 1)"
 echo "Completed successfully: IPA"
 log_status "IPA server installed successfully."
+
+log_status "Rebooting IPA server to finish setup."
+sleep 20 # Wait a few seconds for check-setup-status to pickup the rebooting message
+nohup bash -c "sleep 3; reboot" & # Reboot from within a nohup so that the script can exit cleanly

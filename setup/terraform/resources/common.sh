@@ -512,7 +512,10 @@ enum_cache_timeout = 45/' /etc/sssd/sssd.conf
   systemctl restart sssd
 
   # Adjust krb5.conf
-  sed -i 's/udp_preference_limit.*/udp_preference_limit = 1/;/KEYRING/d' /etc/krb5.conf
+  sed -i 's/udp_preference_limit.*/udp_preference_limit = 1/;/KEYRING/d;/KCM/d' /etc/krb5.conf
+  if [[ -d /etc/krb5.conf.d/ ]]; then
+    find /etc/krb5.conf.d/ \( -type f -o -type l \) -exec egrep -l "KEYRING|KCM" {} \; | xargs -I{} sed -i '/KEYRING/d;/KCM/d' {}
+  fi
 
   # Copy keytabs from IPA server
   rm -rf /tmp/keytabs
@@ -525,8 +528,16 @@ enum_cache_timeout = 45/' /etc/sssd/sssd.conf
   # Add IPA cert to Java's default truststore
   local java_home cacerts
   java_home=$(readlink -f "$(dirname "$(readlink -f "$(which java)")")/..")
-  cacerts=$(readlink -f "$(find "$java_home" -name cacerts)")
+  cacerts=$(readlink -f "$(find -L "$java_home" -name cacerts)")
   keytool -importcert -keystore "$cacerts" -storepass changeit -alias ipa-ca-cert -file /etc/ipa/ca.crt -noprompt
+
+  # The enctype order on Centos 8 changes and it breaks a few things. Fix this here.
+  if [[ -f /usr/share/crypto-policies/policies/DEFAULT.pol && -d /etc/crypto-policies/policies/ ]]; then
+    ipa-getkeytab --permitted-enctypes # check permitted enctypes before the change
+    sed -E 's/(mac@Kerberos *= *)(.*[^ ])  *HMAC-SHA1/\1HMAC-SHA1 \2/g' /usr/share/crypto-policies/policies/DEFAULT.pol > /etc/crypto-policies/policies/CDP.pol
+    update-crypto-policies --set CDP
+    ipa-getkeytab --permitted-enctypes # check permitted enctypes after the change
+  fi
 }
 
 function install_kerberos() {
@@ -2004,10 +2015,10 @@ function install_python() {
     yum_install centos-release-scl
     patch_yum_repos_for_centos
     yum_install rh-python38 rh-python38-python-devel
-    rm -f /usr/bin/python3 /usr/bin/pip3 /usr/local/bin/python3.8
-    ln -s /opt/rh/rh-python38/root/bin/python3 /usr/bin/python3
-    ln -s /opt/rh/rh-python38/root/bin/pip3 /usr/bin/pip3
-    ln -s /opt/rh/rh-python38/root/usr/bin/python3.8 /usr/local/bin/python3.8
+    alternatives --install /usr/bin/python3 workshop-py3-38 /opt/rh/rh-python38/root/usr/bin/python3.8 99999999 \
+      --slave /usr/local/bin/python3 workshop-local-py3-3 /opt/rh/rh-python38/root/usr/bin/python3.8 \
+      --slave /usr/local/bin/python3.8 workshop-local-py3-38 /opt/rh/rh-python38/root/usr/bin/python3.8
+    /opt/rh/rh-python38/root/usr/bin/pip3 install --quiet --upgrade pip virtualenv
     enable_py3
   else
     yum_install python38 python38-devel
