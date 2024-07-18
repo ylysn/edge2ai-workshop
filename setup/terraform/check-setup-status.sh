@@ -64,7 +64,7 @@ function ensure_control_master() {
   fi
 
   (
-    timeout 60 "ssh -q -o StrictHostKeyChecking=no -f -N -M -o ControlPersist=2h -S '${CONTROL_PATH_PREFIX}.${id}' -i '$pvt_key' "$TF_VAR_ssh_username"@$ip" &
+    timeout 60 "ssh -q -o StrictHostKeyChecking=no -f -N -M -o ControlPersist=2h -S '${CONTROL_PATH_PREFIX}.${id}' -i '$pvt_key' "$TF_VAR_ssh_username"@$ip" 2> /dev/null &
     echo $! > "$pid_file"
     wait
     rm -f "$pid_file"
@@ -91,7 +91,7 @@ function check_instance() {
     return
   fi
 
-  ssh -q -S "${CONTROL_PATH_PREFIX}.${id}" "$TF_VAR_ssh_username"@$ip "$cmd" > "${STATUS_FILE_PREFIX}.${id}.tmp"
+  ssh -o ServerAliveInterval=10 -o ServerAliveCountMax=5 -q -S "${CONTROL_PATH_PREFIX}.${id}" "$TF_VAR_ssh_username"@$ip "$cmd" > "${STATUS_FILE_PREFIX}.${id}.tmp" || true
   if [[ $? == 0 ]]; then
     awk -v IP="$ip" -v ID="$id" -v KEY="$pvt_key" -v UNKNOWN="$STATUS_UNKNOWN" '{status=$1; if (status == "") {status=UNKNOWN}; gsub(/.*STATUS:/, "STATUS:"); print status" "ID" "IP" "KEY" "$0}' "${STATUS_FILE_PREFIX}.${id}.tmp"
   fi
