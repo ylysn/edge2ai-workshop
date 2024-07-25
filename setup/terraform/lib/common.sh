@@ -197,10 +197,10 @@ function maybe_launch_docker() {
       fi
     done
     local docker_cmd=./$(basename $0)
-    local interactive_options="--interactive --tty"
-    [[ -n ${NO_INTERACTIVE:-} ]] && interactive_options=""
+    local interactive_option=""
+    [[ -z ${NO_INTERACTIVE:-} ]] && interactive_option="-ti"
     local cmd=(
-      exec docker run ${interactive_options} --rm
+      exec docker run $interactive_option --rm
         --platform linux/amd64
         --detach-keys="ctrl-@"
         --entrypoint=""
@@ -210,6 +210,7 @@ function maybe_launch_docker() {
         -e TF_LOG=${TF_LOG:-}
         -e DEBUG=${DEBUG:-}
         -e NO_PROMPT=${NO_PROMPT:-}
+        -e NO_INTERACTIVE=${NO_INTERACTIVE:-}
         -e NO_LOG_FETCH=${NO_LOG_FETCH:-}
         -e HOSTS_ADD=$(basename $PUBLIC_IPS_FILE)
     )
@@ -267,6 +268,7 @@ function try_in_docker() {
         -e TF_LOG=${TF_LOG:-}
         -e DEBUG=${DEBUG:-}
         -e NO_PROMPT=${NO_PROMPT:-}
+        -e NO_INTERACTIVE=${NO_INTERACTIVE:-}
         -e NO_LOG_FETCH=${NO_LOG_FETCH:-}
         -e HOSTS_ADD=$(basename $PUBLIC_IPS_FILE)
     )
@@ -863,7 +865,7 @@ function wait_for_web() {
   local ret=0
   while [[ $retries -gt "0" ]]; do
     set +e
-    ret=$(curl --connect-timeout 5 -s -o /dev/null -w "%{http_code}" -k -H "Content-Type: application/json" "http://${web_ip_address}/api/ping")
+    ret=$(curl --connect-timeout 5 --max-time 5 -s -o /dev/null -w "%{http_code}" -k -H "Content-Type: application/json" "http://${web_ip_address}/api/ping")
     set -e
     if [ "$ret" == "200" ]; then
       break
@@ -1192,7 +1194,7 @@ function ensure_registration_code() {
     TF_VAR_registration_code="$code"
     export TF_VAR_registration_code
   elif [[ ${TF_VAR_registration_code:-} == "" ]]; then
-    result=$(curl -w "%{http_code}" --connect-timeout 5 "https://frightanic.com/goodies_content/docker-names.php" 2>/dev/null)
+    result=$(curl -w "%{http_code}" --connect-timeout 5 --max-time 5 "https://frightanic.com/goodies_content/docker-names.php" 2>/dev/null)
     status_code=$(echo "$result" | tail -1)
     suggestion=$(echo "$result" | head -1)
     if [[ $status_code != "200" ]]; then
@@ -1298,14 +1300,17 @@ function timeout() {
   local timeout_secs=$1
   local cmd=$2
   python -c '
-import subprocess, sys, signal
+import subprocess, sys, signal, os, psutil
 timeout_secs = int(sys.argv[1])
 try:
     p = subprocess.Popen(sys.argv[2], shell=True)
     p.wait(timeout=timeout_secs)
 except subprocess.TimeoutExpired:
     try:
-        os.kill(p.pid, signal.SIGTERM)
+        parent = psutil.Process(os.getpid())
+        for child in parent.children(recursive=True):
+              print(f"Killing {child.pid}")
+              os.kill(child.pid, signal.SIGTERM)
     except:
         pass
     exit(143)

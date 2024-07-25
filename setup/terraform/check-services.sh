@@ -14,7 +14,7 @@ COMPACT=${2:-}
 
 source $BASE_DIR/lib/common.sh
 
-CURL=(curl -s -L -k --connect-timeout 4)
+CURL=(curl -s -L -k --connect-timeout 4 --max-time 4)
 
 function cleanup() {
   rm -f .curl.*.$$

@@ -14,7 +14,7 @@ START_TIME=${2:-$(date +%s)}
 
 source $BASE_DIR/lib/common.sh
 
-CURL=(curl -L -k --connect-timeout 5)
+CURL=(curl -L -k --connect-timeout 5 --max-time 5)
 CPIDS=""
 
 ICON_UNKNOWN="${C_BG_MAGENTA}${C_WHITE}?${C_NORMAL}"
