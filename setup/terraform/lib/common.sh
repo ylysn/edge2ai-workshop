@@ -197,8 +197,10 @@ function maybe_launch_docker() {
       fi
     done
     local docker_cmd=./$(basename $0)
+    local interactive_options="--interactive --tty"
+    [[ -n ${NO_INTERACTIVE:-} ]] && interactive_options=""
     local cmd=(
-      exec docker run -ti --rm
+      exec docker run ${interactive_options} --rm
         --platform linux/amd64
         --detach-keys="ctrl-@"
         --entrypoint=""
