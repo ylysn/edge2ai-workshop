@@ -173,7 +173,8 @@ EOF
     requests==2.28.0 \
     requests-gssapi==1.2.3 \
     requests-kerberos==0.14.0 \
-    thrift-sasl==0.4.3
+    thrift-sasl==0.4.3 \
+    'krb5<0.6.0' # TODO: this module version was released in July/2024 and requires CFLAGS='-std=c99' to compile the wheel correctly
 
   log_status "Installing JDBC connector"
   cp /usr/share/java/postgresql-jdbc.jar /usr/share/java/postgresql-connector-java.jar
