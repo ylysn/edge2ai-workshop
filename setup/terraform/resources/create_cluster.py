@@ -369,14 +369,19 @@ class ClusterCreator:
         )
 
         # Update host-level parameter required by SMM
+        all_hosts_configs = [
+            cm_client.ApiConfig(
+                # Needed for SMM
+                name='host_agent_safety_valve',
+                value='kafka_broker_topic_partition_metrics_for_smm_enabled=true'
+            )
+        ]
+        if 'JAVA_HOME' in os.environ and os.environ['JAVA_HOME']:
+            all_hosts_configs.append(cm_client.ApiConfig(name='java_home',
+                                                         value=os.environ['JAVA_HOME']))
         self.all_hosts_api.update_config(
-            message='Updating parameter for SMM',
-            body=cm_client.ApiConfigList([
-                cm_client.ApiConfig(
-                    name='host_agent_safety_valve',
-                    value='kafka_broker_topic_partition_metrics_for_smm_enabled=true'
-                )
-            ])
+            message='Updating All Hosts parameters',
+            body=cm_client.ApiConfigList(all_hosts_configs)
         )
 
         # Enable kerberos

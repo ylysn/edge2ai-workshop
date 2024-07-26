@@ -1949,6 +1949,10 @@ function install_java() {
       echo "BIGTOP_JAVA_MAJOR=$bigtop_java_major_version" > /etc/profile.d/cdp.sh
     fi
   fi
+
+  # Sets JAVA_HOME
+  local javac_path="$(readlink -f "$(which javac)")"
+  export JAVA_HOME="${javac_path%/bin/javac}"
 }
 
 function get_os_type() {
