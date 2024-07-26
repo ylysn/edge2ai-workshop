@@ -10,7 +10,7 @@ export THE_PWD=Supersecret1
 export THE_PWD_HASH=8ef2932408095916dc440fbbb18e60f2f5ef42ada16527b917c3d830475de7bb
 export THE_PWD_SALT=1762354682113328521
 
-echo -n "$THE_PWD" > $BASE_DIR/the_pwd.txt
+[[ ! -f $BASE_DIR/the_pwd.txt ]] && echo -n "$THE_PWD" > $BASE_DIR/the_pwd.txt || true
 
 # CA details
 SEC_BASE=/opt/cloudera/security
