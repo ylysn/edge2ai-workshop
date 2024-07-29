@@ -91,7 +91,7 @@ function check_instance() {
     return
   fi
 
-  ssh -o ServerAliveInterval=10 -o ServerAliveCountMax=5 -q -S "${CONTROL_PATH_PREFIX}.${id}" "$TF_VAR_ssh_username"@$ip "$cmd" > "${STATUS_FILE_PREFIX}.${id}.tmp" || true
+  timeout 60 "ssh -o ServerAliveInterval=10 -o ServerAliveCountMax=5 -q -S '${CONTROL_PATH_PREFIX}.${id}' '$TF_VAR_ssh_username'@$ip '$cmd'" > "${STATUS_FILE_PREFIX}.${id}.tmp" || true
   if [[ $? == 0 ]]; then
     awk -v IP="$ip" -v ID="$id" -v KEY="$pvt_key" -v UNKNOWN="$STATUS_UNKNOWN" '{status=$1; if (status == "") {status=UNKNOWN}; gsub(/.*STATUS:/, "STATUS:"); print status" "ID" "IP" "KEY" "$0}' "${STATUS_FILE_PREFIX}.${id}.tmp"
   fi
