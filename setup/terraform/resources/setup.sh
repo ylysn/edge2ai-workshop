@@ -588,7 +588,11 @@ log_status "Waiting for Cloudera Manager to be ready"
 wait_for_cm
 
 log_status "Resetting Cloudera Manager admin password"
-sudo -u postgres psql -d scm -c "update users set password_hash = '${THE_PWD_HASH}', password_salt = ${THE_PWD_SALT} where user_name = 'admin'"
+sudo -u postgres psql -d scm -c "
+  update users
+  set password_hash = case when password_hash like '%SHA-256%' then '${THE_PWD_HASH_719SP1}' else '${THE_PWD_HASH_PRE719SP1}' end,
+      password_salt = case when password_hash like '%SHA-256%' then ${THE_PWD_SALT_719SP1} else ${THE_PWD_SALT_PRE719SP1} end
+  where user_name = 'admin'"
 
 if [[ ${HAS_FLINK:-0} == 1 ]]; then
   # SSB 1.6.x and earlier need Python database connectors installed separately
