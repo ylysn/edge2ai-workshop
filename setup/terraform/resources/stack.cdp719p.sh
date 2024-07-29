@@ -10,13 +10,14 @@ ENABLE_KERBEROS=no
 ENABLE_TLS=no
 
 #####  Java Package
+JAVA_PACKAGE_NAME=java-11-openjdk-devel
 OPENJDK_VERSION=17.0.2
 
 ##### Maven binary
 MAVEN_BINARY_URL=https://downloads.apache.org/maven/maven-3/3.9.6/binaries/apache-maven-3.9.6-bin.tar.gz
 
 #####  CM
-CM_VERSION=7.11.3.2
+CM_VERSION=7.11.3.9
 _CM_BUILD_PATH=${CM_VERSION}
 CM_MAJOR_VERSION=${CM_VERSION%%.*}
 CM_REPO_AS_TARBALL_URL=https://archive.cloudera.com/p/cm${CM_MAJOR_VERSION}/${_CM_BUILD_PATH}/repo-as-tarball/cm${CM_VERSION}-redhat7.tar.gz
@@ -25,7 +26,7 @@ CM_REPO_FILE_URL=
 
 #####  CDH
 CDH_VERSION=7.1.9
-CDH_BUILD=${CDH_VERSION}-1.cdh${CDH_VERSION}.p0.44702451
+CDH_BUILD=${CDH_VERSION}-1.cdh${CDH_VERSION}.p1000.55406660
 _CDH_BUILD_PATH=${CDH_VERSION}
 CDH_MAJOR_VERSION=${CDH_VERSION%%.*}
 CDH_PARCEL_REPO=https://archive.cloudera.com/p/cdh${CDH_MAJOR_VERSION}/${_CDH_BUILD_PATH}/parcels/
