@@ -144,6 +144,12 @@
           "name": "database_type",
           "value": "postgresql"
         }
+{% if ENABLE_KERBEROS != 'yes' %}
+        ,{
+          "name": "ssb-conf/application.properties_service_safety_valve",
+          "value": "zookeeper.sasl.disable=true"
+        }
+{% endif %}
 {% if CSA_VERSION is ge('1.7.0.0') and CSA_VERSION is lt('1.11.1.0') %}
         ,{
           "name": "loadbalancer.url",
