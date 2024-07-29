@@ -144,6 +144,9 @@ EOF
   yum_install --disablerepo="pgdg*" cloudera-manager-daemons cloudera-manager-agent cloudera-manager-server
   systemctl disable cloudera-scm-agent
   systemctl disable cloudera-scm-server
+  # Ensure CM uses the correct JDK
+  sed -i '/^ *export  *JAVA_HOME=.*/d' /etc/default/cloudera-scm-server
+  echo "export JAVA_HOME=${JAVA_HOME}" >> /etc/default/cloudera-scm-server
 
   log_status "Installing PostgreSQL"
   # PostgreSQL has a dependency on Java 8, so the install below will install the OpenJDK 8 package
