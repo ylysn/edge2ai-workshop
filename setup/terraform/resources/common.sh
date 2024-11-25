@@ -1470,6 +1470,8 @@ EOF
 
     popd
   fi
+  # FIX-ON-GCP: Add missing packages
+  yum_install iptables firewalld net-tools krb5-devel
 
   # Below is needed for secure clusters (required by Impyla)
   yum_install cyrus-sasl-md5 cyrus-sasl-plain cyrus-sasl-gssapi cyrus-sasl-devel
@@ -1493,9 +1495,12 @@ function resolve_host_addresses() {
         export PUBLIC_DNS=${prefix}.${PUBLIC_IP}.nip.io
         ;;
     gcp)
+        echo "server 169.254.169.254 prefer iburst minpoll 4 maxpoll 4" >> /etc/chrony.conf
+        systemctl enable chronyd
+        systemctl restart chronyd
         export PRIVATE_DNS=$(curl -H "Metadata-Flavor: Google" http://169.254.169.254/computeMetadata/v1/instance/hostname)
         export PRIVATE_IP=$(curl -s -H "Metadata-Flavor: Google" http://169.254.169.254/computeMetadata/v1/instance/network-interfaces/0/ip)
-        export PUBLIC_DNS=$PRIVATE_DNS
+        export PUBLIC_DNS=${prefix}.${PUBLIC_IP}.nip.io
         ;;
     aliyun)
         export PRIVATE_DNS=$(curl -s http://100.100.100.200/latest/meta-data/hostname)
