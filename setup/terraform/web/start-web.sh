@@ -97,10 +97,10 @@ function patch_yum_repos_for_centos() {
   # The mirrorlist.centos.org host was also decommissioned.
   # The commands below update YUM repo file accordingly, if needed
   if [[ $(get_os_type) == "CENTOS" ]]; then
-    sed -i 's/mirror.centos.org/vault.centos.org/g' /etc/yum.repos.d/*.repo
-    sed -i 's/^#.*baseurl=http/baseurl=http/g' /etc/yum.repos.d/*.repo
-    sed -i 's/^mirrorlist=http/#mirrorlist=http/g' /etc/yum.repos.d/*.repo
-    sed -i 's/metalink=/#metalink=/' /etc/yum.repos.d/*.repo
+    sudo sed -i 's/mirror.centos.org/vault.centos.org/g' /etc/yum.repos.d/*.repo
+    sudo sed -i 's/^#.*baseurl=http/baseurl=http/g' /etc/yum.repos.d/*.repo
+    sudo sed -i 's/^mirrorlist=http/#mirrorlist=http/g' /etc/yum.repos.d/*.repo
+    # sudo sed -i 's/metalink=/#metalink=/' /etc/yum.repos.d/*.repo
   fi
 }
 

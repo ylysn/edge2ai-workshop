@@ -78,7 +78,7 @@ function patch_yum_repos_for_centos() {
     sed -i 's/mirror.centos.org/vault.centos.org/g' /etc/yum.repos.d/*.repo
     sed -i 's/^#.*baseurl=http/baseurl=http/g' /etc/yum.repos.d/*.repo
     sed -i 's/^mirrorlist=http/#mirrorlist=http/g' /etc/yum.repos.d/*.repo
-    sed -i 's/metalink=/#metalink=/' /etc/yum.repos.d/*.repo
+    # sed -i 's/metalink=/#metalink=/' /etc/yum.repos.d/*.repo
   fi
 }
 
