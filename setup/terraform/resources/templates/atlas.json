@@ -83,10 +83,17 @@
               "value": "TLSv1,TLSv1.1"
             }
 {% else %}
+{% if HAS_ECS == '1'  %}
+            ,{
+              "name": "conf/atlas-application.properties_role_safety_valve",
+              "value": "atlas.audit.hbase.zookeeper.quorum={{CLUSTER_HOST}}:2181\natlas.graph.storage.hostname={{CLUSTER_HOST}}\natlas.proxyuser.dpprofiler.hosts=*\natlas.proxyuser.dpprofiler.users=*\natlas.proxyuser.dpprofiler.groups=*"
+            }
+{% else %}
             ,{
               "name": "conf/atlas-application.properties_role_safety_valve",
               "value": "atlas.audit.hbase.zookeeper.quorum={{CLUSTER_HOST}}:2181\natlas.graph.storage.hostname={{CLUSTER_HOST}}"
             }
+{% endif %}
 {% endif %}
 {% endif %}
 {% if USE_IPA == 'yes' %}

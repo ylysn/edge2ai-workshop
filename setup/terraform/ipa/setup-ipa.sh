@@ -185,13 +185,17 @@ else
 fi
 
 log_status "Installing IPA server"
-ipa-server-install --hostname=$(hostname -f) -r $REALM_NAME -n $(hostname -d) -a "$IPA_ADMIN_PASSWORD" -p "$DIRECTORY_MANAGER_PASSWORD" -U
+ipa-server-install --hostname=$(hostname -f) -r $REALM_NAME -n $(hostname -d) -a "$IPA_ADMIN_PASSWORD" -p "$DIRECTORY_MANAGER_PASSWORD" -U --ca-subject="CN=$(hostname -f),OU=Edge2AI Workshop,O=Cloudera,C=US"
 
 # authenticate as admin
 echo "${IPA_ADMIN_PASSWORD}" | kinit admin >/dev/null
 
 log_status "Creating groups"
 add_groups $USERS_GROUP $ADMINS_GROUP shadow supergroup hue
+
+# added for ECS (ipausers group is reserved, use cdp-users as default)
+log_status "Default group is ${USERS_GROUP}"
+ipa config-mod --defaultgroup="$USERS_GROUP"
 
 log_status "Creating Cloudera Manager principal user and adding it to admins group"
 add_user admin /home/admin admins $ADMINS_GROUP $USERS_GROUP "trust admins" shadow supergroup
@@ -206,6 +210,8 @@ log_status "Creating HUE proxy user"
 add_user hue /home/hue hue $USERS_GROUP
 
 log_status "Creating other users"
+# Add user "cloudera" as admin user for ECS
+add_user cloudera /home/cloudera $ADMINS_GROUP
 add_user workshop /home/workshop $USERS_GROUP
 add_user alice /home/alice $USERS_GROUP
 add_user bob /home/bob $USERS_GROUP
@@ -213,7 +219,7 @@ add_user bob /home/bob $USERS_GROUP
 log_status "Adding required roles"
 # Add this role to avoid racing conditions between multiple CMs coming up at the same time
 ipa role-add cmadminrole
-ipa role-add-privilege cmadminrole --privileges="Service Administrators"
+ipa role-add-privilege cmadminrole --privileges="Service Administrators" --privileges="Host Administrators"
 
 log_status "Starting the IPA service"
 systemctl restart krb5kdc
