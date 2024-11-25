@@ -191,7 +191,7 @@ pip install --progress-bar off gunicorn
 log_status "Setting up environment"
 cat > $BASE_DIR/.env <<EOF
 SECRET_KEY=$(python3 -c "import uuid; print(uuid.uuid4().hex)")
-DATABASE_URL=postgresql+psycopg2://${DB_USER}:${DB_PWD}@${DB_HOST}:5432/${DB_NAME}
+DATABASE_URL=postgresql+psycopg2://${DB_USER}:${DB_PWD}@localhost:5432/${DB_NAME}
 EOF
 
 log_status "Initializing database tables"
