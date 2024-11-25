@@ -49,6 +49,21 @@ variable "cluster_instance_type" {
   description = "Instance type for the CDH cluster"
 }
 
+variable "ecs_instance_type" {
+  description = "Instance type for the ECS host"
+  default = "Standard_E32_v3"
+}
+
+variable "ipa_instance_type" {
+  description = "Instance type for the IPA host"
+  default = "Standard_F2"
+}
+
+variable "web_instance_type" {
+  description = "Instance type for the Web host"
+  default = "Standard_F2"
+}
+
 variable "name_prefix" {
   description = "Name prefix for resources"
 }

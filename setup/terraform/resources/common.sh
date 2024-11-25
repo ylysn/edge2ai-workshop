@@ -1490,9 +1490,14 @@ function resolve_host_addresses() {
         export PUBLIC_DNS=${prefix}.${PUBLIC_IP}.nip.io
         ;;
     azure)
+        systemctl enable chronyd
+        systemctl restart chronyd
         export PRIVATE_DNS="$(cat /etc/hostname).$(grep search /etc/resolv.conf | awk '{print $2}')"
         export PRIVATE_IP=$(hostname -I | awk '{print $1}')
         export PUBLIC_DNS=${prefix}.${PUBLIC_IP}.nip.io
+        # Added to prevent DNS leak to nip.io
+        sed -i.bak -e "s/plugins = ifcfg-rh,/dns=none/g" /etc/NetworkManager/NetworkManager.conf 
+        systemctl restart NetworkManager
         ;;
     gcp)
         echo "server 169.254.169.254 prefer iburst minpoll 4 maxpoll 4" >> /etc/chrony.conf
