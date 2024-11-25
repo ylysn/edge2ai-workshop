@@ -22,14 +22,14 @@ resource "aws_instance" "cluster" {
   }
 
   root_block_device {
-    volume_type           = "gp2"
+    volume_type           = "gp3"
     volume_size           = "200"
     delete_on_termination = true
   }
 
   ebs_block_device {
     device_name           = "/dev/sdf"
-    volume_type           = "gp2"
+    volume_type           = "gp3"
     volume_size           = "200"
   }
 
@@ -70,7 +70,7 @@ resource "aws_eip" "eip_cluster" {
 resource "aws_instance" "web" {
   count             = (var.launch_web_server ? 1 : 0)
   ami               = var.base_ami
-  instance_type     = "t2.medium"
+  instance_type     = var.web_instance_type
   availability_zone = aws_subnet.subnet1.availability_zone
   key_name          = aws_key_pair.workshop_web_key_pair.key_name
 
@@ -85,7 +85,7 @@ resource "aws_instance" "web" {
   ]
 
   root_block_device {
-    volume_type           = "gp2"
+    volume_type           = "gp3"
     volume_size           = "20"
     delete_on_termination = true
   }
@@ -126,7 +126,7 @@ resource "aws_eip" "eip_web" {
 resource "aws_instance" "ipa" {
   count                 = (var.use_ipa ? 1 : 0)
   ami                    = var.base_ami
-  instance_type          = "t2.medium"
+  instance_type          = var.ipa_instance_type
   subnet_id              = aws_subnet.subnet1.id
   availability_zone      = aws_subnet.subnet1.availability_zone
   key_name               = aws_key_pair.workshop_key_pair.key_name
@@ -138,7 +138,7 @@ resource "aws_instance" "ipa" {
   ]
 
   root_block_device {
-    volume_type           = "gp2"
+    volume_type           = "gp3"
     volume_size           = "20"
     delete_on_termination = true
   }
@@ -201,7 +201,7 @@ resource "aws_instance" "ecs" {
   }
 
   root_block_device {
-    volume_type           = "gp2"
+    volume_type           = "gp3"
     volume_size           = "500"
     delete_on_termination = true
   }

@@ -51,6 +51,17 @@ variable "cluster_instance_type" {
 
 variable "ecs_instance_type" {
   description = "Instance type for the ECS host"
+  default = "r5a.8xlarge"
+}
+
+variable "ipa_instance_type" {
+  description = "Instance type for the IPA host"
+  default = "t2.medium"
+}
+
+variable "web_instance_type" {
+  description = "Instance type for the Web host"
+  default = "t2.medium"
 }
 
 variable "name_prefix" {
