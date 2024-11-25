@@ -1539,6 +1539,9 @@ function complete_host_initialization() {
     cat /etc/workshop.conf >> /etc/profile
   fi
 
+  # JDK17-FIX: Kerberos module support for jdk17
+  echo 'export JAVA_TOOL_OPTIONS="--add-exports=java.security.jgss/sun.security.krb5=ALL-UNNAMED"' >> /etc/profile
+  
   log_status "Ensuring there's plenty of entropy"
   systemctl enable rngd
   systemctl start rngd
