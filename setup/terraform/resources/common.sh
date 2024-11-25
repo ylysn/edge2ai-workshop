@@ -379,6 +379,29 @@ function validate_stack() {
       errors=1
     fi
   fi
+  # HAS_ECS
+  if [ "${HAS_ECS:-}" == "1" ]; then
+    if [[ $(is_kerberos_enabled) == "yes" ]] && [[ $(is_tls_enabled) == "yes" ]]; then
+      if [[ $USE_IPA == "no" ]]; then
+        echo "${C_RED}ERROR: ECS requires IPA to be enabled.${C_NORMAL}" > /dev/stderr 
+        errors=1
+      else
+        local stack_cm7_version=$(echo $CM_VERSION | sed 's/\.//g')
+        local stack_ecs_version=$(echo $ECS_VERSION | sed 's/\.//g')
+        if [[ $stack_ecs_version -ge 152 ]] && [[ $stack_cm7_version -lt 71132 ]]; then
+          echo "${C_RED}ERROR: ECS 1.5.2+ requires Cloudera Manager version 7.11.3.2+.${C_NORMAL}" > /dev/stderr 
+          errors=1
+        fi
+        if [[ $TF_VAR_pvc_data_services == "false" ]]; then
+          echo "${C_RED}ERROR: ECS requires TF_VAR_pvc_data_services to be true.${C_NORMAL}" > /dev/stderr 
+          errors=1
+        fi       
+      fi
+    else
+      echo "${C_RED}ERROR: ECS requires TLS and Kerberos to be enabled.${C_NORMAL}" > /dev/stderr 
+      errors=1
+    fi
+  fi
 
   if [ "$errors" != "0" ]; then
     echo "${C_RED}ERROR: Please fix the errors above in the configuration file $stack_file and try again.${C_NORMAL}" > /dev/stderr
@@ -480,6 +503,10 @@ function install_ipa_client() {
 
   # Install IPA client package
   log_status "Installing IPA client packages"
+  # Enable idm client stream for RHEL 8
+  if [[ $MAJOR_OS_VERSION == "8" ]]; then
+    yum -y module enable idm:DL1/client 
+  fi
   yum_install ipa-client openldap-clients krb5-workstation krb5-libs
 
   wait_for_ipa "$ipa_host"
@@ -491,7 +518,7 @@ function install_ipa_client() {
     --password="$THE_PWD" \
     --server="$IPA_HOST" \
     --realm="$KRB_REALM" \
-    --domain="$(hostname -f | sed 's/^[^.]*\.//')" \
+    --domain="$(echo $ipa_host | sed 's/^[^.]*\.//')" \
     --force-ntpd \
     --ssh-trust-dns \
     --all-ip-addresses \
@@ -768,6 +795,11 @@ function create_certs() {
     ALT_NAMES="DNS:${LOCAL_HOSTNAME},"
   fi
   export ALT_NAMES="${ALT_NAMES}DNS:$(hostname -f),DNS:*.${public_ip}.nip.io,DNS:*.cdsw.${public_ip}.nip.io"
+  # HAS_ECS: Add ECS SAN
+  if [[ ${HAS_ECS:-0} == 1 ]] && [[ $PUBLIC_DNS == ecs* ]]; then
+    ALT_NAMES="${ALT_NAMES},DNS:*.apps.${PUBLIC_DNS},DNS:edge2ai.apps.${PUBLIC_DNS},DNS:*.edge2ai.apps.${PUBLIC_DNS}"
+  fi
+  export ALT_NAMES
   openssl req\
     -new\
     -key ${KEY_PEM} \
@@ -811,6 +843,12 @@ EOF
     fi
     ipa host-add-principal $(hostname -f) "host/*.${public_ip}.nip.io"
     ipa host-add-principal $(hostname -f) "host/*.cdsw.${public_ip}.nip.io"
+    # HAS_ECS: Add principals
+    if [[ ${HAS_ECS:-0} == 1 ]] && [[ $PUBLIC_DNS == ecs* ]]; then
+      ipa host-add-principal $(hostname -f) "host/*.apps.${PUBLIC_DNS}"
+      ipa host-add-principal $(hostname -f) "host/edge2ai.apps.${PUBLIC_DNS}"
+      ipa host-add-principal $(hostname -f) "host/*.edge2ai.apps.${PUBLIC_DNS}"
+    fi
     ipa cert-request ${CSR_PEM} --principal=host/$(hostname -f)
     echo -e "-----BEGIN CERTIFICATE-----\n$(ipa host-find $(hostname -f) | grep Certificate: | tail -1 | awk '{print $NF}')\n-----END CERTIFICATE-----" | openssl x509 > ${HOST_PEM}
 
@@ -866,12 +904,14 @@ EOF
   rm -f temp.p12
 
   # Generate JKS truststore
+  # HAS_ECS: Add store type JKS as newer JDK defaults to PKCS12, ensure compat with ECS 1.5.3+
   rm -f $TRUSTSTORE_JKS
   for cert in $ROOT_PEM; do
     if [[ -s $cert ]]; then
       keytool \
         -importcert \
         -keystore $TRUSTSTORE_JKS \
+        -storetype JKS \
         -storepass $TRUSTSTORE_PWD \
         -file $cert \
         -alias $(basename $cert) \
@@ -982,6 +1022,12 @@ function tighten_keystores_permissions() {
 
 function wait_for_cm() {
   echo "-- Wait for CM to be ready before proceeding"
+  # TLS: Check if is_tls_enabled = "yes"
+  if [[ "${1:-no}" == "no" ]]; then
+    api_url='http://localhost:7180/api/version'
+  else
+    api_url='https://localhost:7183/api/version'
+  fi
   while true; do
     for pwd in admin ${THE_PWD}; do
       local result=$(
@@ -994,7 +1040,7 @@ function wait_for_cm() {
           --silent \
           --user "admin:${pwd}" \
           --write-out "%{http_code}" \
-          http://localhost:7180/api/version
+          "${api_url}"
       )
       if [[ $result == "200" ]]; then
         break 2
@@ -1061,7 +1107,7 @@ function get_service_urls() {
   load_stack $NAMESPACE $BASE_DIR/resources validate_only exclude_signed
   CLUSTER_HOST=dummy PRIVATE_IP=dummy PUBLIC_DNS=dummy DOCKER_DEVICE=dummy CDSW_DOMAIN=dummy \
   IPA_HOST="$([[ $USE_IPA == "yes" ]] && echo dummy || echo "")" \
-  CLUSTER_ID=dummy PEER_CLUSTER_ID=dummy PEER_PUBLIC_DNS=dummy \
+  CLUSTER_ID=dummy PEER_CLUSTER_ID=dummy PEER_PUBLIC_DNS=dummy ECS_PUBLIC_DNS=dummy \
   python $BASE_DIR/resources/cm_template.py --cdh-major-version $CDH_MAJOR_VERSION $CM_SERVICES > $tmp_template_file
 
   local cm_port=$([[ $ENABLE_TLS == "yes" ]] && echo 7183 || echo 7180)
@@ -1370,6 +1416,8 @@ function deploy_os_prereqs() {
   yum_install vim wget curl git bind-utils figlet cowsay jq rng-tools rsync
   # For troubleshooting purposes, when needed
   yum_install sysstat strace iotop lsof
+  # ROCKY8: Allow install on Rocky
+  add_rocky_support
 }
 
 function deploy_cluster_prereqs() {
@@ -1720,6 +1768,14 @@ function install_ecs() {
     "https://${CLUSTER_HOST}:7183/api/v51/clusters/${ECS_CLUSTER_NAME}/parcels/products/ECS/versions/${ECS_BUILD}/commands/activate"
   wait_for_parcel_state $ECS_CLUSTER_NAME ECS $ECS_BUILD DISTRIBUTED ACTIVATING ACTIVATED
 
+  # HAS_ECS: ECS SSL certificate signed by IPA needs to be on CM for provisioning
+  log_status "Prepare CM host for ECS certificates"
+  mkdir -p ${SEC_BASE}/ecs
+  ssh -tt -o StrictHostKeyChecking=no -i /home/${SSH_USER}/.ssh/${NAMESPACE}.pem ${SSH_USER}@${ECS_PRIVATE_IP} "sudo cp ${UNENCRYTED_KEY_PEM} ${HOST_PEM} /home/${SSH_USER}/.; sudo chown ${SSH_USER}:${SSH_USER} /home/${SSH_USER}/unencrypted-key.pem /home/${SSH_USER}/host.pem"
+  scp -o StrictHostKeyChecking=no -i /home/${SSH_USER}/.ssh/${NAMESPACE}.pem ${SSH_USER}@${ECS_PRIVATE_IP}:/home/${SSH_USER}/unencrypted-key.pem ${SEC_BASE}/ecs/unencrypted-key.pem 
+  scp -o StrictHostKeyChecking=no -i /home/${SSH_USER}/.ssh/${NAMESPACE}.pem ${SSH_USER}@${ECS_PRIVATE_IP}:/home/${SSH_USER}/host.pem ${SEC_BASE}/ecs/host.pem
+  chown -R cloudera-scm:cloudera-scm ${SEC_BASE}/ecs
+
   log_status "Add ECS and Docker services to ECS cluster"
   local svc_json_file=${BASE_DIR}/ecs_svc.json
   cat > $svc_json_file <<EOF
@@ -1799,6 +1855,34 @@ function install_ecs() {
             "name": "lsoDataPath",
             "value": "/ecs/local-storage",
             "sensitive": false
+          },
+          {
+            "name": "target_redundancy",
+            "value": 1
+          },
+          {
+            "name": "longhorn_replication",
+            "value": 1
+          },
+          {
+            "name": "internal_mirror",
+            "value": "true"
+          },
+          {
+            "name": "cluster_cidr",
+            "value": "172.42.0.0/16"
+          },
+          {
+            "name": "service_cidr",
+            "value": "172.43.0.0/16"
+          },
+          {
+            "name": "ssl_certificate",
+            "value": "${SEC_BASE}/ecs/host.pem"
+          },
+          {
+            "name": "ssl_private_key",
+            "value": "${SEC_BASE}/ecs/unencrypted-key.pem"
           }
         ]
       },
@@ -1832,11 +1916,28 @@ EOF
     -d @$svc_json_file
 
   log_status "Initialize ECS"
+  # HAS_ECS: using values.yaml to configure ECS components
+  local values_yaml_file=${BASE_DIR}/values.yaml
+  cat > $values_yaml_file <<EOF
+ContainerInfo:
+  Mode: public
+  CopyDocker: false
+
+Database:
+  Mode: embedded
+  EmbeddedDbStorage: 20
+
+Vault:
+  Mode: embedded
+  EmbeddedStorage: 20
+EOF
+
+  local values_yaml=$(sed ':a;N;$!ba;s/\n/\\n/g' "$values_yaml_file" | sed 's/"/\\"/g')
   local ecs_json_file=${BASE_DIR}/ecs_install.json
   cat > $ecs_json_file <<EOF
 {
   "remoteRepoUrl": "${ECS_REPO}",
-  "valuesYaml": "ContainerInfo:\n  Mode: public\n  CopyDocker: false\nDatabase:\n  Mode: embedded\n  EmbeddedDbStorage: 200\nServices:\n  thunderheadenvironment:\n    Config:\n      database:\n        name: db-env\n  mlxcontrolplaneapp:\n    Config:\n      database:\n        name: db-mlx\n  dwx:\n    Config:\n      database:\n        name: db-dwx\n  cpxliftie:\n    Config:\n      database:\n        name: db-liftie\n  dex:\n    Config:\n      database:\n        name: db-dex\n  resourcepoolmanager:\n    Config:\n      database:\n        name: db-resourcepoolmanager\n  cdpcadence:\n    Config:\n      database:\n        name: db-cadence\n  cdpcadencevisibility:\n    Config:\n      database:\n        name: db-cadence-visibility\n  clusteraccessmanager:\n    Config:\n      database:\n        name: db-clusteraccessmanager\n  monitoringapp:\n    Config:\n      database:\n        name: db-alerts\n  thunderheadusermanagementprivate:\n    Config:\n      database:\n        name: db-ums\n  classicclusters:\n    Config:\n      database:\n        name: cm-registration\n  clusterproxy:\n    Config:\n      database:\n        name: cluster-proxy\nVault:\n  Mode: embedded\n",
+  "valuesYaml": "${values_yaml}",
   "containerizedClusterName": "${ECS_CLUSTER_NAME}",
   "experienceClusterName": "${ECS_CLUSTER_NAME}",
   "datalakeClusterName": "OneNodeCluster"
@@ -1855,6 +1956,13 @@ EOF
     echo "Waiting for ECS setup to finish"
     sleep 1
   done
+  # HAS_ECS: Check ECS setup status after Job has finished 
+  if [[ $(curl -s -k --location-trusted -u admin:"${THE_PWD}" "$(get_cm_base_url)/api/v19/commands/$job_id" | jq -r '.success') == "false" ]]; then
+    echo "ERROR: ECS setup has failed"
+    return 1
+  else
+    echo "ECS setup has been successful"
+  fi
 }
 
 function wait_for_parcel_state() {
@@ -2033,4 +2141,320 @@ function install_python() {
     alternatives --install /usr/bin/pip pip /usr/bin/pip3 1
   fi
   pip install --quiet --upgrade pip
+}
+
+# HAS_ECS: ECS cluster prereqs
+function deploy_ecs_prereqs() {
+  log_status "Installing ECS dependencies"
+  # Install dependencies on python38 for ECS 1.5.x
+  install_python
+  pip install pyyaml
+  yum_install iptables firewalld net-tools make
+}
+
+function map_ipa_users() {
+  log_status "Configure LDAP/PAM Groups on CDP-BASE"
+  CURL=(curl -s -u "admin:${THE_PWD}" -H "accept: application/json" -H "Content-Type: application/json")
+  "${CURL[@]}" -X POST \
+    "https://${CLUSTER_HOST}:7183/api/v30/externalUserMappings" \
+    -d '{"items":[{"name":"cdp-admins","type":"LDAP","authRoles":[{"name":"ROLE_ADMIN"}]},{"name":"cdp-users","type":"LDAP","authRoles":[{"name":"ROLE_CLUSTER_ADMIN"}]}]}'
+
+  log_status "Patch gen_credentials_ipa.sh for IPA support to ECS"
+  # Preparing the script before provisioning ECS
+  local ipa_patch_file=/tmp/ipa_patch_file.$$
+  cat > $ipa_patch_file <<EOF
+  # ipa host-add patch for k8s
+  if [[ \$HOST =~ \. ]]; then
+    ipa host-add \$HOST  --force --no-reverse
+  else
+    ipa host-add \$HOST.cloudera.com  --force --no-reverse
+  fi
+EOF
+  local search_string='  ipa host-add $HOST --force --no-reverse'
+  sed -i.bak -e '/'"$search_string"'/r '"$ipa_patch_file"'' -e '/'"$search_string"'/d' /opt/cloudera/cm/bin/gen_credentials_ipa.sh
+}
+
+# ADD-CML: Workspace provisioner
+function install_cml() {
+  
+  local ENDPOINT_HOST="${1}"
+  local EXTERNAL_NFS=${2:-0}
+  local KUBE_CONFIG="${3:-}"
+  local KUBE_DOMAIN="${4:-}"
+
+  log_status "Install CML on $ENDPOINT_HOST"
+
+  local ECS_BASE_URL="https://console-cdp.apps.$ENDPOINT_HOST"
+  local ROOT_CA=/opt/cloudera/security/x509/truststore.pem
+  local COOKIE_FILE=${BASE_DIR}/cookie.txt.$$
+  local LDAP_JSON=${BASE_DIR}/ldap.json.$$
+  local VALIDATE_JSON=${BASE_DIR}/validate.json.$$
+  local ECS_ENV_JSON=${BASE_DIR}/env.json.$$
+  local ECS_CML_JSON=${BASE_DIR}/cml.json.$$
+
+  CURL_POST=(curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json")
+
+  log_status "Configure LDAP and groups on ECS-CP"
+  local CDP_ACCOUNT_ID=$(curl -v -k --retry 3 $ECS_BASE_URL/authenticate/login/local 2>&1 | grep "location:" | sed 's/.*accountId=//;s/&.*//')
+  # Get a session token
+  curl -k -X POST -c $COOKIE_FILE -d "username=admin&password=admin" "$ECS_BASE_URL/authenticate/callback/local?accountId=$CDP_ACCOUNT_ID&state=$ECS_BASE_URL" >/dev/null 2>&1
+  # Get Admin CRN
+  local ADMIN_CRN=$("${CURL_POST[@]}" -d '{}' $ECS_BASE_URL/api/v1/iam/getUser 2>/dev/null | jq -r '.user.crn')
+  # Get LDAP
+  "${CURL_POST[@]}" -d '{"ldapProviderName": "cm-ldap"}' -o $LDAP_JSON $ECS_BASE_URL/api/v1/iam/describeLdapProvider >/dev/null 2>&1
+  # Add Groups (cdp-admins,cdp-users)
+  local CDP_ADMINS_CRN=$("${CURL_POST[@]}" -d '{"groupName": "cdp-admins", "syncMembershipOnUserLogin": true}' $ECS_BASE_URL/api/v1/iam/createGroup 2>/dev/null | jq -r '.group.crn')
+  local CDP_USERS_CRN=$("${CURL_POST[@]}" -d '{"groupName": "cdp-users", "syncMembershipOnUserLogin": true}' $ECS_BASE_URL/api/v1/iam/createGroup 2>/dev/null | jq -r '.group.crn')
+  # Add user "admin" to cdp-admins group
+  cat > $ECS_ENV_JSON <<EOF
+{
+    "groupName": "$CDP_ADMINS_CRN",
+    "userId": "$ADMIN_CRN"
+}
+EOF
+  "${CURL_POST[@]}" -d @$ECS_ENV_JSON $ECS_BASE_URL/api/v1/iam/addUserToGroup >/dev/null 2>&1
+  # Assign PowerUser Role to cdp-admins
+  "${CURL_POST[@]}" -d '{"role": "crn:altus:iam:us-west-1:altus:role:PowerUser", "groupName": "cdp-admins"}' $ECS_BASE_URL/api/v1/iam/assignGroupRole >/dev/null 2>&1
+  # Assign Data Catalog Role to cdp-users
+  "${CURL_POST[@]}" -d '{"role": "crn:altus:iam:us-west-1:altus:role:DataCatalogCspRuleViewer", "groupName": "cdp-users"}' $ECS_BASE_URL/api/v1/iam/assignGroupRole >/dev/null 2>&1
+
+  # Get JSON values
+  local LDAP_url=$(jq -r '.ldapProvider.ldapDetails.url' $LDAP_JSON)
+  local LDAP_userSearchBase=$(jq -r '.ldapProvider.ldapDetails.userSearchBase' $LDAP_JSON)
+  local LDAP_userSearchFilter=$(jq -r '.ldapProvider.ldapDetails.userSearchFilter' $LDAP_JSON)
+  local LDAP_groupSearchBase=$(jq -r '.ldapProvider.ldapDetails.groupSearchBase' $LDAP_JSON)
+  local LDAP_groupSearchFilter=$(jq -r '.ldapProvider.ldapDetails.groupSearchFilter' $LDAP_JSON)
+  local LDAP_emailMappingAttribute=$(jq -r '.ldapProvider.ldapDetails.emailMappingAttribute' $LDAP_JSON)
+  local LDAP_bindDn=$(jq -r '.ldapProvider.ldapDetails.bindDn' $LDAP_JSON)
+  local LDAP_tlsCaCertificates="$(cat $ROOT_CA | awk '{printf "%s\\n", $0}')"
+  # Build request JSON
+  cat > $VALIDATE_JSON <<EOF
+{
+  "ldapProviderName": "cm-ldap",
+  "skipGroupSyncOnLogin": false,
+  "url": "$LDAP_url",
+  "userSearchBase": "$LDAP_userSearchBase",
+  "userSearchFilter": "$LDAP_userSearchFilter",
+  "groupSearchBase": "$LDAP_groupSearchBase",
+  "groupSearchFilter": "$LDAP_groupSearchFilter",
+  "syncGroupsOnLogin": true,
+  "emailMappingAttribute": "$LDAP_emailMappingAttribute",
+  "showAdvanced": false,
+  "bindDn": "$LDAP_bindDn",
+  "bindPassword": "",
+  "tlsCaCertificates": [
+    "$LDAP_tlsCaCertificates"
+  ]
+}
+EOF
+
+  # Handle LDAP Certificate validation
+  local return_code=400
+  if jq -e . $VALIDATE_JSON  >/dev/null 2>&1 ; then
+    # Validate LDAP Config
+    return_code=$("${CURL_POST[@]}" -d @$VALIDATE_JSON $ECS_BASE_URL/api/v1/consoleauthenticationcdp/validateLdapConfig 2>/dev/null | jq -r '.code')
+    if [ $return_code == "200" ]; then
+      "${CURL_POST[@]}" -d @$VALIDATE_JSON $ECS_BASE_URL/api/v1/iam/updateLdapProvider 2>/dev/null
+      echo "LDAP is configured with IPA Root CA SSL certificate"
+    else
+      echo "ERROR: Can't validate LDAP Config, abort"
+      return 1
+    fi
+  else
+    echo "ERROR: Invalid LDAP Config, abort"
+    return 1
+  fi
+
+  # Remove ecs environemnt created by express wizard
+  log_status "Rebuild default environment on ECS-CP"
+  "${CURL_POST[@]}" -d '{"envNameOrCrn": "ecs"}' $ECS_BASE_URL/api/v1/compute/deregisterClusters >/dev/null 2>&1
+  "${CURL_POST[@]}" -d '{"environmentName": "ecs","cascading": true}' $ECS_BASE_URL/api/v1/environments2/deleteEnvironment >/dev/null 2>&1
+
+  # Build request JSON
+  cat > $ECS_ENV_JSON <<EOF
+{
+    "environmentName": "default",
+    "address": "https://$CLUSTER_HOST:7183",
+    "user": "admin",
+    "authenticationToken": "$THE_PWD",
+    "clusterNames": [
+        "OneNodeCluster"
+    ],
+    "kubeConfig": "$KUBE_CONFIG",
+    "authenticationTokenType": "CLEARTEXT_PASSWORD",
+    "namespacePrefix": "cdp",
+    "domain": "$KUBE_DOMAIN",
+    "dockerConfigJson": "",
+    "description": ""
+}
+EOF
+  # Call createPrivateEnvironment
+  "${CURL_POST[@]}" -d @$ECS_ENV_JSON $ECS_BASE_URL/api/v1/environments2/createPrivateEnvironment >/dev/null 2>&1
+  while true; do
+    [[ $("${CURL_POST[@]}" -d '{"environmentName": "default"}' $ECS_BASE_URL/api/v1/environments2/describeEnvironment 2>/dev/null| jq -r '.environment.status') == "AVAILABLE" ]] && break
+    echo "Waiting for environment to be ready.."
+    sleep 10
+  done
+
+  # Assign DE,DW,ML Access Roles to environment "default"
+  ECS_ENV_CRN=$("${CURL_POST[@]}" -d '{"environmentName": "default"}' $ECS_BASE_URL/api/v1/environments2/describeEnvironment 2>/dev/null| jq -r '.environment.crn')
+  ECS_ADMIN_ROLES=( 'DEAdmin' 'DWAdmin' 'MLAdmin' )
+  for ECS_ROLE in "${ECS_ADMIN_ROLES[@]}"; do
+    cat > $ECS_ENV_JSON <<EOF
+{
+  "resourceCrn": "$ECS_ENV_CRN",
+  "resourceRoleCrn": "crn:altus:iam:us-west-1:altus:resourceRole:$ECS_ROLE",
+  "groupName": "cdp-admins"
+}
+EOF
+    "${CURL_POST[@]}" -d @$ECS_ENV_JSON $ECS_BASE_URL/api/v1/iam/assignGroupResourceRole >/dev/null 2>&1
+  done
+  ECS_USER_ROLES=( 'DEUser' 'DWUser' 'MLUser' )
+  for ECS_ROLE in "${ECS_USER_ROLES[@]}"; do
+    cat > $ECS_ENV_JSON <<EOF
+{
+  "resourceCrn": "$ECS_ENV_CRN",
+  "resourceRoleCrn": "crn:altus:iam:us-west-1:altus:resourceRole:$ECS_ROLE",
+  "groupName": "cdp-users"
+}
+EOF
+    "${CURL_POST[@]}" -d @$ECS_ENV_JSON $ECS_BASE_URL/api/v1/iam/assignGroupResourceRole >/dev/null 2>&1
+  done
+
+  log_status "Configure NFS for CML Workspace"
+  NFS_EXT_DIR=""
+  NFS_VER=""
+  NFS_DISK_SIZE="100"
+
+  if [[ "${EXTERNAL_NFS}" == "1" ]]; then
+    log_status "Prepare NFS for CML"
+    enable_nfs
+    NFS_EXT_DIR="${ENDPOINT_HOST}:/nfs/workshop"
+    NFS_VER="4.1"
+    NFS_DISK_SIZE=""
+  fi
+
+  log_status "Provision CML Workspace"
+  # Build request JSON
+  cat > $ECS_CML_JSON <<EOF
+{
+    "environmentName": "default",
+    "workspaceName": "edge2ai",
+    "disableTLS": false,
+    "enableMonitoring": true,
+    "enableGovernance": true,
+    "enableModelMetrics": true,
+    "existingDatabaseConfig": {},
+    "mlGovernancePrincipal": "workshop",
+    "staticSubdomain": "edge2ai",
+    "existingNFS": "$NFS_EXT_DIR",
+    "nfsVersion": "$NFS_VER",
+    "namespace": "edge2ai",
+    "nfsDiskSize": "$NFS_DISK_SIZE",
+    "performCdswMigration": false
+}
+EOF
+  # Call createWorkspace 
+  "${CURL_POST[@]}" -d @$ECS_CML_JSON $ECS_BASE_URL/api/v1/ml/createWorkspace 2>/dev/null
+  local tries=99
+  while [[ $tries -ne 0 ]]; do
+    echo "Waiting for CML workspace to be ready.."
+    [[ $("${CURL_POST[@]}" -d '{}' $ECS_BASE_URL/api/v1/ml/listWorkspaces 2>/dev/null | jq -r '.workspaces[] | .instanceStatus') == "installation:finished" ]] && break
+    ((tries--))
+    sleep 10
+  done
+
+  # Get CML URL
+  CML_BASE_URL=$("${CURL_POST[@]}" -d '{}' $ECS_BASE_URL/api/v1/ml/listWorkspaces 2>/dev/null | jq -r '.workspaces[] | .instanceUrl')
+  log_status "Workspace URL=${CML_BASE_URL}"
+  log_status "CML Workspace provisioned successfully"
+}
+
+# ADD-CML: Model Registry
+function install_model_registry() {
+
+  local ENDPOINT_HOST="${1}"  
+  local ECS_BASE_URL="https://console-cdp.apps.$ENDPOINT_HOST"
+  local ECS_MR_JSON=${BASE_DIR}/modelregistry.json.$$
+  local OZONE_BUCKET_NAME="modelregistry"
+  local COOKIE_FILE=${BASE_DIR}/cookie.txt.$$
+
+  CURL_POST=(curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json")
+
+  log_status "Setting up Model Registry"
+
+  # create_ozone_bucket
+  kinit -kt $KEYTABS_DIR/admin.keytab admin
+  ozone sh bucket create s3v/$OZONE_BUCKET_NAME
+  # get_s3_access
+  get_s3_access=( $(ozone s3 getsecret --om-service-id=ozone) )
+  S3_ACCESS_KEY="${get_s3_access[0]#*=}"
+  S3_SECRET_KEY="${get_s3_access[1]#*=}"
+
+  # Get accountId
+  local CDP_ACCOUNT_ID=$(curl -v -k --retry 3 $ECS_BASE_URL/authenticate/login/local 2>&1 | grep "location:" | sed 's/.*accountId=//;s/&.*//')
+  # Get a session token
+  curl -k -X POST -c $COOKIE_FILE -d "username=admin&password=admin" "$ECS_BASE_URL/authenticate/callback/local?accountId=$CDP_ACCOUNT_ID&state=$ECS_BASE_URL" >/dev/null 2>&1
+  # Get CRN
+  ECS_ENV_CRN=$("${CURL_POST[@]}" -d '{"environmentName": "default"}' $ECS_BASE_URL/api/v1/environments2/describeEnvironment 2>/dev/null| jq -r '.environment.crn')
+
+  cat > $ECS_MR_JSON <<EOF
+{
+  "environmentName": "default",
+  "s3AccessKey": "$S3_ACCESS_KEY",
+  "s3SecretKey": "$S3_SECRET_KEY",
+  "s3Bucket": "$OZONE_BUCKET_NAME",
+  "s3Endpoint": "https://$CLUSTER_HOST:9879",
+  "environmentCrn": "$ECS_ENV_CRN"
+}
+EOF
+  # Call createModelRegistry 
+  "${CURL_POST[@]}" -d @$ECS_MR_JSON $ECS_BASE_URL/api/v1/ml/createModelRegistry 2>/dev/null
+  local tries=99
+  while [[ $tries -ne 0 ]]; do
+    echo "Waiting for Model Registry to be ready.."
+    [[ $("${CURL_POST[@]}" -d '{}' $ECS_BASE_URL/api/v1/ml/listModelRegistries 2>/dev/null | jq -r '.modelRegistries[] | .status') == "INSTALLED" ]] && break
+    ((tries--))
+    sleep 10
+  done
+  # Get Workspace CRN
+  WORKSPACE_CRN=$("${CURL_POST[@]}" -d '{}' $ECS_BASE_URL/api/v1/ml/listWorkspaces 2>/dev/null | jq -r '.workspaces[] | .crn')
+  # Refresh Edge2AI workspace
+  "${CURL_POST[@]}" -d '{"workspaceCrn": "'"$WORKSPACE_CRN"'"}' $ECS_BASE_URL/api/v1/ml/refreshModelRegistryConfigmap 2>/dev/null
+  log_status "Model Registry provisioned successfully"
+}
+
+function enable_nfs() {
+  yum_install nfs-utils
+  mkdir /nfs/workshop -p
+  chown 8536:8536 /nfs/workshop
+  chmod g+srwx /nfs/workshop
+  echo "/nfs/workshop  *(rw,sync,no_root_squash,no_all_squash,no_subtree_check)" | tee -a /etc/exports
+  systemctl enable nfs-server
+  systemctl start nfs-server
+  if firewall-cmd --state >/dev/null 2>&1; then
+    firewall-cmd --permanent --add-service=nfs
+    firewall-cmd --permanent --add-service=mountd
+    firewall-cmd --permanent --add-service=rpc-bind
+    firewall-cmd --reload
+    echo "firewall-cmd is running"
+  else
+    echo "SKIPPED: firewall-cmd is not running or not installed"
+  fi
+}
+
+# ROCKY8: Add rocky support
+function add_rocky_support() {
+  lsb_dist="$(. /etc/os-release && echo "$ID")"
+  # Add support for Rocky Linux 8
+  if [[ $lsb_dist == "rocky" ]]; then
+    sed -i 's/Rocky Linux release/Red Hat Enterprise Linux release/' /etc/redhat-release
+    sed -i 's/ID="rocky"/ID="rhel"/' /etc/os-release
+    if lsblk -o MOUNTPOINT,TYPE | grep -q "^/ .*lvm"; then
+        echo "The root disk is on LVM."
+        growpart /dev/nvme0n1 5
+        lvextend -l +100%FREE /dev/mapper/rocky-root
+        xfs_growfs /
+    fi
+  fi
 }

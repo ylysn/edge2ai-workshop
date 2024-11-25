@@ -186,6 +186,13 @@
               "name": "ranger.default.policy.groups",
               "value": "cdp-admins"
             }
+{% if HAS_ECS == '1'  %}
+            ,
+            {
+              "name": "conf/ranger-admin-site.xml_role_safety_valve",
+              "value": "<property><name>ranger.proxyuser.dpprofiler.hosts</name><value>*</value></property><property><name>ranger.proxyuser.dpprofiler.users</name><value>*</value></property><property><name>ranger.proxyuser.dpprofiler.groups</name><value>*</value></property>"
+            }
+{% endif %}
 {% endif %}
 {% if ((CM_VERSION == '7.1.1' and (CM_BUILD_NUMBER|int) < 2929688) or CM_VERSION is lt('7.1.1')) and ENABLE_TLS == 'yes' %}
         ,

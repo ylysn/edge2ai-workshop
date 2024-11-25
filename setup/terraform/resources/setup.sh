@@ -26,7 +26,7 @@ IPA_HOST=${6:-}
 IPA_PRIVATE_IP=${7:-}
 ECS_PUBLIC_DNS=${8:-}
 ECS_PRIVATE_IP=${9:-}
-export NAMESPACE DOCKER_DEVICE IPA_HOST
+export NAMESPACE DOCKER_DEVICE IPA_HOST ECS_PUBLIC_DNS
 
 if [[ ! -z ${CLUSTER_ID:-} ]]; then
   PEER_CLUSTER_ID=$(( (CLUSTER_ID/2)*2 + (CLUSTER_ID+1)%2 ))
@@ -663,6 +663,9 @@ python -u $BASE_DIR/create_cluster.py ${CLUSTER_HOST} \
     $KERBEROS_OPTION \
     $(get_create_cluster_tls_option)
 
+# HAS_ECS: Disable Gen Creds Optimization for IPA
+sed -i.bak '/^export CMF_JAVA_OPTS=/s|"$| -DDISABLE_GC_OPTIMIZATION=1"|' /etc/default/cloudera-scm-server
+
 log_status "Restarting Cloudera Manager"
 systemctl restart cloudera-scm-server
 
@@ -706,7 +709,7 @@ log_status "Restarting agent"
 systemctl restart cloudera-scm-agent
 
 log_status "Waiting for Cloudera Manager to be ready"
-wait_for_cm
+wait_for_cm $(is_tls_enabled)
 
 if [[ ${HAS_SRM:-0} == 1 ]]; then
   log_status "Creating external accounts"
@@ -1029,8 +1032,14 @@ if [ "${HAS_CDSW:-}" == "1" ]; then
   nohup python -u /tmp/resources/cdsw_setup.py --public-ip "$(echo "$PUBLIC_DNS" | sed -E 's/cdp.(.*).nip.io/\1/')" --model-pkl-file /tmp/resources/iot_model.pkl --password-file /tmp/resources/the_pwd.txt > /tmp/resources/cdsw_setup.log 2>&1 &
 fi
 
-if [[ ! -z ${ECS_PUBLIC_DNS:-} ]]; then
+# HAS_ECS: Install CML and Model Registry
+if [[ "${HAS_ECS:-}" == "1" ]]; then
+  log_status "Starting ECS setup on ${ECS_PUBLIC_DNS}"
+  map_ipa_users
   install_ecs
+  install_cml $ECS_PUBLIC_DNS
+  install_model_registry $ECS_PUBLIC_DNS
+  log_status "Finished ECS setup on ${ECS_PUBLIC_DNS}"
 fi
 
 log_status "Cleaning up"

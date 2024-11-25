@@ -80,7 +80,7 @@ function check_instance() {
     pvt_key=$TF_VAR_web_ssh_private_key
     cmd="bash ./web/check-setup-status.sh start-web.sh web/start-web.log"
   elif [[ ${id:0:1} == "E" ]]; then
-    cmd="bash /tmp/resources/check-setup-status.sh 'setup-ecs.sh install-prereqs' /tmp/resources/setup-ecs.install-prereqs.log"
+    cmd="bash /tmp/resources/check-setup-status.sh \"setup-ecs.sh install-prereqs\" /tmp/resources/setup-ecs.install-prereqs.log"
   elif [[ $id == "I" ]]; then
     cmd="bash ./ipa/check-setup-status.sh setup-ipa.sh ipa/setup-ipa.log"
   fi
