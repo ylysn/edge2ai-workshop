@@ -2025,7 +2025,7 @@ function install_python() {
     alternatives --install /usr/bin/python3 workshop-py3-38 /opt/rh/rh-python38/root/usr/bin/python3.8 99999999 \
       --slave /usr/local/bin/python3 workshop-local-py3-3 /opt/rh/rh-python38/root/usr/bin/python3.8 \
       --slave /usr/local/bin/python3.8 workshop-local-py3-38 /opt/rh/rh-python38/root/usr/bin/python3.8
-    /opt/rh/rh-python38/root/usr/bin/pip3 install --quiet --upgrade pip virtualenv
+    /usr/bin/python3 -m pip install --quiet --upgrade pip virtualenv
     enable_py3
   else
     yum_install python38 python38-devel

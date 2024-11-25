@@ -83,7 +83,7 @@ function install_python() {
     patch_yum_repos_for_centos
     yum_install rh-python38 rh-python38-python-devel
     alternatives --install /usr/bin/python3 workshop-py3-38 /opt/rh/rh-python38/root/usr/bin/python3.8 99999999
-    /opt/rh/rh-python38/root/usr/bin/pip3 install --quiet --upgrade pip virtualenv
+    /usr/bin/python3 -m pip install --quiet --upgrade pip virtualenv
     MANPATH= source /opt/rh/rh-python38/enable
     cat /opt/rh/rh-python38/enable >> /etc/profile
   else
