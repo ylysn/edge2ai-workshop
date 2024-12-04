@@ -6,11 +6,11 @@
 #                                   ZOOKEEPER
 # CDP-only components:              ATLAS, KNOX, LIVY, OZONE, RANGER, ZEPPELIN
 #
-# CDP Data Servicea component:      ECS
+# CDP Data Services component:      ECS
 # ECS required components:          HIVE, RANGER, ATLAS, HDFS, OZONE
 # 
 # CML and Model Registry will be provisioned by ECS
-# CDSW 1.10.5 supports 8.x-8.9 only 8.10 is not supported
+# CDSW 1.10.5 supports RHEL/Rocky 8.x-8.9 only 8.10 is not supported
 # 
 CM_SERVICES=BASE,ZOOKEEPER,HDFS,YARN,HIVE,HUE,IMPALA,KAFKA,KUDU,NIFI,OOZIE,OZONE,SCHEMAREGISTRY,SPARK_ON_YARN,SMM,CDSW,FLINK,SOLR,HBASE,ATLAS,LIVY,ZEPPELIN,RANGER,KNOX,ECS
 ENABLE_KERBEROS=yes
